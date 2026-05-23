@@ -1435,6 +1435,10 @@ class ApprovalView(ui.View):
                 self.user_id
             )
 
+            cursor.execute(""" SELECT title FROM quests WHERE quest_id = ? """, (self.quest_id,))
+            quest_data = cursor.fetchone()
+            quest_title = (quest_data[0] if quest_data and quest_data[0] else "Untitled Quest")
+            
             await logs_channel.send(
                 f"{user.mention}'s submission for "
                 f"**Quest #{self.quest_id} - {quest_title}** "
