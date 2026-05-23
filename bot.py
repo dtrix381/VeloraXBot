@@ -135,8 +135,8 @@ conn.commit()
 # HELPERS
 # =========================
 
-def get_channel(guild, name):
-    return discord.utils.get(guild.text_channels, name=name)
+def get_channel(guild, channel_id):
+    return guild.get_channel(channel_id)
 
 def has_admin_role(member):
     return any(role.id == ADMIN_ROLE_ID for role in member.roles)
@@ -173,9 +173,6 @@ def get_user_rank(user_id):
 
     return "Unranked"
 
-def get_channel_by_name(guild, name):
-    return discord.utils.get(guild.text_channels, name=name)
-
 # =========================
 # DELETE MESSAGES
 # =========================
@@ -191,7 +188,7 @@ async def on_message(message):
     # BLOCK TALKING IN SHOP
     # =========================
 
-    if message.channel.name == SHOP_CHANNEL:
+    if message.channel.id == SHOP_CHANNEL:
 
         try:
             await message.delete()
@@ -217,7 +214,7 @@ async def on_message(message):
     # REGISTER CHANNEL
     # =========================
 
-    if message.channel.name == REGISTER_CHANNEL:
+    if message.channel.id == REGISTER_CHANNEL:
 
         try:
             await message.delete()
@@ -230,7 +227,7 @@ async def on_message(message):
     # INVITE CHANNEL
     # =========================
 
-    if message.channel.name == INVITE_CHANNEL:
+    if message.channel.id == INVITE_CHANNEL:
 
         try:
             await message.delete()
@@ -243,7 +240,7 @@ async def on_message(message):
     # APPROVAL CHANNEL
     # =========================
 
-    if message.channel.name == APPROVAL_CHANNEL:
+    if message.channel.id == APPROVAL_CHANNEL:
 
         try:
             await message.delete()
@@ -256,7 +253,7 @@ async def on_message(message):
     # APPROVAL CHANNEL
     # =========================
 
-    if message.channel.name == VIP_APPROVAL_CHANNEL:
+    if message.channel.id == VIP_APPROVAL_CHANNEL:
 
         try:
             await message.delete()
@@ -269,7 +266,7 @@ async def on_message(message):
     # LOGS CHANNEL
     # =========================
 
-    if message.channel.name == LOGS_CHANNEL:
+    if message.channel.id == LOGS_CHANNEL:
 
         try:
             await message.delete()
@@ -282,7 +279,7 @@ async def on_message(message):
     # LOGS CHANNEL
     # =========================
 
-    if message.channel.name == GOLD_LOGS_CHANNEL:
+    if message.channel.id == GOLD_LOGS_CHANNEL:
 
         try:
             await message.delete()
@@ -295,7 +292,7 @@ async def on_message(message):
     # QUEST CHANNEL
     # =========================
 
-    if message.channel.name == QUEST_CHANNEL:
+    if message.channel.id == QUEST_CHANNEL:
 
         try:
             await message.delete()
@@ -320,7 +317,7 @@ async def on_message(message):
     # REPORT CHANNEL
     # =========================
 
-    if message.channel.name == REPORT_CHANNEL:
+    if message.channel.id== REPORT_CHANNEL:
 
         try:
             await message.delete()
@@ -345,7 +342,7 @@ async def on_message(message):
     # PAID QUEST CHANNEL
     # =========================
 
-    if message.channel.name == PAID_QUEST_CHANNEL:
+    if message.channel.id == PAID_QUEST_CHANNEL:
 
         try:
             await message.delete()
@@ -370,7 +367,7 @@ async def on_message(message):
     # LEADERBOARD CHANNEL
     # =========================
 
-    if message.channel.name == STATS_CHANNEL:
+    if message.channel.id == STATS_CHANNEL:
 
         allowed = [
             "/profile"
@@ -399,7 +396,7 @@ async def on_message(message):
     # LEADERBOARD CHANNEL
     # =========================
 
-    if message.channel.name == GOLD_LEADERBOARD_CHANNEL:
+    if message.channel.id == GOLD_LEADERBOARD_CHANNEL:
 
         allowed = [
             "/leaderboard",
@@ -1463,10 +1460,7 @@ async def setup(interaction: discord.Interaction):
 
     guild = interaction.guild
 
-    existing = discord.utils.get(
-        guild.categories,
-        name=CATEGORY_NAME
-    )
+    existing = guild.get_channel(CATEGORY_NAME)
 
     if existing:
         category = existing
@@ -1632,10 +1626,7 @@ async def setup(interaction: discord.Interaction):
         view=InviteView()
     )
 
-    vip_existing = discord.utils.get(
-        guild.categories,
-        name=VIP_CATEGORY_NAME
-    )
+    vip_existing = guild.get_channel(VIP_CATEGORY_NAME)
 
     if vip_existing:
         vip_category = vip_existing
@@ -1648,10 +1639,7 @@ async def setup(interaction: discord.Interaction):
     # GET OR CREATE CHANNELS
     # =========================
 
-    paid_quest_channel = discord.utils.get(
-        guild.text_channels,
-        name=PAID_QUEST_CHANNEL
-    )
+    paid_quest_channel = guild.get_channel(PAID_QUEST_CHANNEL)
 
     if not paid_quest_channel:
         paid_quest_channel = await guild.create_text_channel(
@@ -1659,10 +1647,7 @@ async def setup(interaction: discord.Interaction):
             category=vip_category
         )
 
-    vip_approval_channel = discord.utils.get(
-        guild.text_channels,
-        name=VIP_APPROVAL_CHANNEL
-    )
+    vip_approval_channel = guild.get_channel(VIP_APPROVAL_CHANNEL)
 
     if not vip_approval_channel:
         vip_approval_channel = await guild.create_text_channel(
@@ -1680,10 +1665,7 @@ async def setup(interaction: discord.Interaction):
 
 
 
-    gold_logs_channel = discord.utils.get(
-        guild.text_channels,
-        name=GOLD_LOGS_CHANNEL
-    )
+    gold_logs_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
 
     if not gold_logs_channel:
         gold_logs_channel = await guild.create_text_channel(
@@ -1691,10 +1673,7 @@ async def setup(interaction: discord.Interaction):
             category=vip_category
         )
 
-    gold_leaderboard_channel = discord.utils.get(
-        guild.text_channels,
-        name=GOLD_LEADERBOARD_CHANNEL
-    )
+    gold_leaderboard_channel = guild.get_channel(GOLD_LEADERBOARD_CHANNEL)
 
     if not gold_leaderboard_channel:
         gold_leaderboard_channel = await guild.create_text_channel(
@@ -1781,10 +1760,7 @@ async def setup(interaction: discord.Interaction):
     # CREATE SHOP CHANNEL
     # =========================
 
-    shop_channel = discord.utils.get(
-        interaction.guild.text_channels,
-        name=SHOP_CHANNEL
-    )
+    shop_channel = guild.get_channel(SHOP_CHANNEL)
 
     if not shop_channel:
         overwrites = {
@@ -3092,10 +3068,7 @@ async def create_quest(interaction: discord.Interaction):
                     # SEND TO QUEST CHANNEL
                     # =========================
 
-                    quest_channel = discord.utils.get(
-                        confirm_interaction.guild.text_channels,
-                        name=QUEST_CHANNEL
-                    )
+                    quest_channel = guild.get_channel(QUEST_CHANNEL)
 
                     msg = await quest_channel.send(
                         embed=embed,
@@ -3658,10 +3631,7 @@ class PayoutConfirmView(ui.View):
         )
 
         # payout log channel
-        payout_channel = discord.utils.get(
-            guild.text_channels,
-            name=APPROVAL_CHANNEL
-        )
+        payout_channel = guild.get_channel(APPROVAL_CHANNEL)
 
         if payout_channel:
             embed = discord.Embed(
@@ -3796,10 +3766,7 @@ class ReportPublishView(ui.View):
     @ui.button(label="📤 Publish", style=discord.ButtonStyle.green)
     async def publish(self, interaction: discord.Interaction, button: ui.Button):
 
-        report_channel = discord.utils.get(
-            interaction.guild.text_channels,
-            name=REPORT_CHANNEL
-        )
+        report_channel = guild.get_channel(REPORT_CHANNEL)
 
         embed = discord.Embed(
             title="🚨 REPORT SUBMITTED",
@@ -3868,10 +3835,7 @@ class ReportReviewView(ui.View):
 
         member = guild.get_member(self.reported_user)
 
-        report_channel = discord.utils.get(
-            guild.text_channels,
-            name=REPORT_CHANNEL
-        )
+        report_channel = guild.get_channel(REPORT_CHANNEL)
 
         # delete admin review message
         await interaction.message.delete()
@@ -3942,10 +3906,7 @@ class ReportReviewView(ui.View):
         first_role = guild.get_role(FIRST_OFFENSE_ROLE)
         second_role = guild.get_role(SECOND_OFFENSE_ROLE)
 
-        report_channel = discord.utils.get(
-            guild.text_channels,
-            name=REPORT_CHANNEL
-        )
+        report_channel = guild.get_channel(REPORT_CHANNEL)
 
         admin = interaction.user
 
