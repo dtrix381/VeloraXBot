@@ -8,9 +8,9 @@ import re
 import os
 
 GUILD_OWNER_ID = 488015447417946151
-ADMIN_ROLE_ID = 1501472062903156756 #Team
-MEMBER_ROLE_ID = 1501473138188353616 #Creator
-VERIFIED_ROLE_ID = 1501473283852472380 #Engager
+ADMIN_ROLE_ID = 1501472062903156756  # Team
+MEMBER_ROLE_ID = 1501473138188353616  # Creator
+VERIFIED_ROLE_ID = 1501473283852472380  # Engager
 WELCOME_CHANNEL_ID = 1501481909337718824
 INVITE_APPROVAL_CHANNEL_ID = 1507312406395752458
 BOT_INVITER_ID = 1501868266614947880
@@ -34,7 +34,6 @@ GOLD_LOGS_CHANNEL = 1507640096290242612
 GOLD_LEADERBOARD_CHANNEL = 1507640098521481236
 SHOP_CHANNEL = 1507640118616391802
 APPROVAL_CHANNEL = 1507640094951997460
-
 
 EXCHANGE_GOLD_COST = 100
 EXCHANGE_REWARD = "$10"
@@ -131,6 +130,7 @@ CREATE TABLE IF NOT EXISTS quest_claims (
 
 conn.commit()
 
+
 # =========================
 # HELPERS
 # =========================
@@ -138,11 +138,14 @@ conn.commit()
 def get_channel(guild, channel_id):
     return guild.get_channel(channel_id)
 
+
 def has_admin_role(member):
     return any(role.id == ADMIN_ROLE_ID for role in member.roles)
 
+
 def has_member_role(member):
     return any(role.id == MEMBER_ROLE_ID for role in member.roles)
+
 
 def time_left(expires_at):
     now = datetime.now(UTC)
@@ -157,8 +160,8 @@ def time_left(expires_at):
 
     return f"{remaining.days}d {hours}h {minutes}m Left"
 
-def get_user_rank(user_id):
 
+def get_user_rank(user_id):
     cursor.execute("""
     SELECT user_id
     FROM users
@@ -173,13 +176,13 @@ def get_user_rank(user_id):
 
     return "Unranked"
 
+
 # =========================
 # DELETE MESSAGES
 # =========================
 
 @bot.event
 async def on_message(message):
-
     # ignore bot/webhook/system messages
     if message.author.bot or message.webhook_id:
         return
@@ -317,7 +320,7 @@ async def on_message(message):
     # REPORT CHANNEL
     # =========================
 
-    if message.channel.id== REPORT_CHANNEL:
+    if message.channel.id == REPORT_CHANNEL:
 
         try:
             await message.delete()
@@ -567,7 +570,7 @@ class ApprovalConfirmView(ui.View):
             value=interaction.user.mention,
             inline=False
         )
-        
+
         # =========================
         # 8. UPDATE ORIGINAL EMBED
         # =========================
@@ -636,7 +639,6 @@ class CreatorReviewView(ui.View):
 # =========================
 
 class XModal(ui.Modal, title="Connect Your X"):
-
     username = ui.TextInput(
         label="X Username",
         placeholder="Enter your X username",
@@ -827,8 +829,6 @@ class XModal(ui.Modal, title="Connect Your X"):
 
         await interaction.response.send_message(success_message, ephemeral=True)
 
-
-
         # Dynamic lookup for your stylized log channel name
         try:
             log_channel = guild.get_channel(LOGS_CHANNEL)
@@ -836,8 +836,6 @@ class XModal(ui.Modal, title="Connect Your X"):
                 await log_channel.send(log_text)
         except Exception as e:
             print(f"Failed to send log message: {e}")
-
-
 
 
 class InviteApprovalView(ui.View):
@@ -934,6 +932,7 @@ class RegisterView(ui.View):
     async def connect_x(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_modal(XModal())
 
+
 # =========================
 # INVITES VIEW (PERSISTENT & UNIQUE CODES)
 # =========================
@@ -975,7 +974,7 @@ class InviteView(ui.View):
         # 3. Only run this if they have absolutely zero history in the system
         try:
             invite = await interaction.channel.create_invite(
-                max_age=0,   # Never expires
+                max_age=0,  # Never expires
                 max_uses=0,  # Infinite uses
                 unique=True  # Guarantees a brand new code unique to them
             )
@@ -1014,6 +1013,7 @@ class InviteView(ui.View):
                 "❌ An unexpected error occurred while generating your link.",
                 ephemeral=True
             )
+
 
 # =========================
 # SUBMIT QUEST MODAL
@@ -1194,6 +1194,7 @@ class SubmitQuestModal(ui.Modal):
             ephemeral=True
         )
 
+
 # =========================
 # QUEST VIEW
 # =========================
@@ -1256,6 +1257,7 @@ class QuestView(ui.View):
         submit_button.callback = submit_callback
 
         self.add_item(submit_button)
+
 
 # =========================
 # APPROVAL VIEW
@@ -1438,7 +1440,7 @@ class ApprovalView(ui.View):
             cursor.execute(""" SELECT title FROM quests WHERE quest_id = ? """, (self.quest_id,))
             quest_data = cursor.fetchone()
             quest_title = (quest_data[0] if quest_data and quest_data[0] else "Untitled Quest")
-            
+
             await logs_channel.send(
                 f"{user.mention}'s submission for "
                 f"**Quest #{self.quest_id} - {quest_title}** "
@@ -1452,13 +1454,13 @@ class ApprovalView(ui.View):
 
         self.add_item(deny_button)
 
+
 # =========================
 # SETUP COMMAND
 # =========================
 
 @bot.tree.command(name="setup")
 async def setup(interaction: discord.Interaction):
-
     await interaction.response.defer(ephemeral=True)
 
     if interaction.user.id != GUILD_OWNER_ID:
@@ -1673,8 +1675,6 @@ async def setup(interaction: discord.Interaction):
             category=vip_category
         )
 
-
-
     gold_logs_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
 
     if not gold_logs_channel:
@@ -1849,14 +1849,36 @@ async def setup(interaction: discord.Interaction):
 # =========================
 
 @bot.tree.command(name="paid_quest")
-async def paid_quest(interaction: discord.Interaction):
 
-    if interaction.channel.id != PAID_QUEST_CHANNEL:
-
-        quest_channel = get_channel(
-            interaction.guild,
-            QUEST_CHANNEL
+@app_commands.choices(
+    quest_type=[
+        app_commands.Choice(
+            name="Like & Reply = 1 Gold Point",
+            value="like_reply"
+        ),
+        app_commands.Choice(
+            name="Follow = 2 Gold Points",
+            value="follow"
+        ),
+        app_commands.Choice(
+            name="Retweet = 5 Gold Points",
+            value="retweet"
+        ),
+        app_commands.Choice(
+            name="Quote Retweet = 40 Gold Points",
+            value="quote_retweet"
+        ),
+        app_commands.Choice(
+            name="Tweet = 80 Gold Points",
+            value="tweet"
         )
+    ]
+)
+
+async def paid_quest(
+        interaction: discord.Interaction,
+        quest_type: app_commands.Choice[str]
+):
 
         await interaction.response.send_message(
             f"You can only use this command in {paid_quest_channel.mention}",
@@ -1866,7 +1888,6 @@ async def paid_quest(interaction: discord.Interaction):
         return
 
     if not has_admin_role(interaction.user):
-
         await interaction.response.send_message(
             "No permission.",
             ephemeral=True
@@ -1876,8 +1897,10 @@ async def paid_quest(interaction: discord.Interaction):
 
     class QuestModal(ui.Modal):
 
-        def __init__(self):
+        def __init__(self, quest_type):
             super().__init__(title="Create Quest")
+
+            self.quest_type = quest_type
 
             # =========================
             # QUEST TITLE
@@ -1910,6 +1933,51 @@ async def paid_quest(interaction: discord.Interaction):
         ):
             created_at = datetime.now(UTC)
             expires_at = created_at + timedelta(hours=24)
+
+            QUEST_TYPES = {
+                "like_reply": {
+                    "points": 1,
+                    "task": (
+                        "Like and Comment on the Post "
+                        "and Submit your Reply Link"
+                    )
+                },
+                "follow": {
+                    "points": 2,
+                    "task": (
+                        "Follow the Account and "
+                        "Submit Screenshot Proof"
+                    )
+                },
+                "retweet": {
+                    "points": 5,
+                    "task": (
+                        "Retweet the Post and "
+                        "Submit Retweet Link"
+                    )
+                },
+                "quote_retweet": {
+                    "points": 40,
+                    "task": (
+                        "Quote Retweet the Post and "
+                        "Submit Quote Tweet Link"
+                    )
+                },
+                "tweet": {
+                    "points": 80,
+                    "task": (
+                        "Create a Tweet about the Project "
+                        "and Submit Tweet Link"
+                    )
+                }
+            }
+
+            quest_data = QUEST_TYPES[self.quest_type]
+
+            reward_points = quest_data["points"]
+
+            task_text = quest_data["task"]
+
 
             cursor.execute("""
             INSERT INTO quests (
@@ -1957,10 +2025,7 @@ async def paid_quest(interaction: discord.Interaction):
 
             embed.add_field(
                 name="Task",
-                value=(
-                    "Like and Comment on the Post "
-                    "and Submit your Reply Link"
-                ),
+                value=task_text,
                 inline=False
             )
 
@@ -1989,7 +2054,9 @@ async def paid_quest(interaction: discord.Interaction):
 
             await modal_interaction.channel.send(
                 f"<@&{MEMBER_ROLE_ID}> "
-                f"Raid now to earn :moneybag:  **Gold Points**"
+                f"Raid now to earn "
+                f":moneybag: {reward_points} "
+                f"**Gold Points**"
             )
 
             await modal_interaction.response.send_message(
@@ -1997,7 +2064,7 @@ async def paid_quest(interaction: discord.Interaction):
                 ephemeral=True
             )
 
-    await interaction.response.send_modal(QuestModal())
+    await interaction.response.send_modal(QuestModal(quest_type.value))
 
 # =========================
 # UPDATE QUEST STATUS
@@ -2005,7 +2072,6 @@ async def paid_quest(interaction: discord.Interaction):
 
 @tasks.loop(minutes=1)
 async def update_quests():
-
     for guild in bot.guilds:
 
         channel = get_channel(guild, QUEST_CHANNEL)
@@ -2048,7 +2114,6 @@ async def update_quests():
 
 
 async def load_persistent_views():
-
     # =========================
     # QUEST VIEWS
     # =========================
@@ -2117,7 +2182,6 @@ async def profile(
         interaction: discord.Interaction,
         member: discord.Member
 ):
-
     if interaction.channel.id != STATS_CHANNEL:
         stats_channel = get_channel(
             interaction.guild,
@@ -2159,7 +2223,6 @@ async def profile(
     history = cursor.fetchall()
 
     if not data:
-
         await interaction.response.send_message(
             "User not registered.",
             ephemeral=True
@@ -2226,7 +2289,6 @@ async def profile(
             reply_link,
             completed_at
     ) in history:
-
         # QUEST CHANNEL
         quest_channel = get_channel(
             interaction.guild,
@@ -2288,7 +2350,6 @@ class LeaderboardView(ui.View):
     ):
 
         if interaction.user.id != self.user_id:
-
             await interaction.response.send_message(
                 "You cannot control this leaderboard.",
                 ephemeral=True
@@ -2381,11 +2442,10 @@ class LeaderboardView(ui.View):
             view=self
         )
 
+
 @bot.tree.command(name="leaderboard")
 async def leaderboard(interaction: discord.Interaction):
-
     if interaction.channel.id != GOLD_LEADERBOARD_CHANNEL:
-
         leaderboard_channel = get_channel(
             interaction.guild,
             GOLD_LEADERBOARD_CHANNEL
@@ -2422,7 +2482,6 @@ async def leaderboard(interaction: discord.Interaction):
     print(users)
 
     if not users:
-
         await interaction.response.send_message(
             "Leaderboard is empty.",
             ephemeral=True
@@ -2533,7 +2592,6 @@ async def leaderboard(interaction: discord.Interaction):
 
 @bot.event
 async def on_member_join(member):
-
     guild = member.guild
 
     try:
@@ -2694,6 +2752,7 @@ async def on_member_join(member):
     except Exception as e:
         print(f"on_member_join error: {e}")
 
+
 # =========================
 # COMMUNITY QUEST VIEW
 # =========================
@@ -2736,7 +2795,7 @@ class CommunityQuestView(ui.View):
         # =========================
 
         guild = interaction.guild
-        
+
         cursor.execute("""
         SELECT id
         FROM quest_claims
@@ -2750,7 +2809,6 @@ class CommunityQuestView(ui.View):
         existing_claim = cursor.fetchone()
 
         if existing_claim:
-
             await interaction.response.send_message(
                 "❌ You already claimed this quest.",
                 ephemeral=True
@@ -2810,7 +2868,6 @@ class CommunityQuestView(ui.View):
         log_channel = guild.get_channel(LOGS_CHANNEL)
 
         if log_channel:
-
             await log_channel.send(
                 f"**Quest Claimed**\n\n"
                 f"**Member:** {interaction.user.mention}\n"
@@ -2831,7 +2888,6 @@ class CommunityQuestView(ui.View):
 
 @bot.tree.command(name="create_quest")
 async def create_quest(interaction: discord.Interaction):
-
     # =========================
     # ROLE CHECK
     # =========================
@@ -2848,7 +2904,6 @@ async def create_quest(interaction: discord.Interaction):
         allowed = True
 
     if not allowed:
-
         await interaction.response.send_message(
             "❌ No permission.",
             ephemeral=True
@@ -2905,7 +2960,6 @@ async def create_quest(interaction: discord.Interaction):
             user_data = cursor.fetchone()
 
             if not user_data:
-
                 await modal_interaction.response.send_message(
                     "❌ You must register your X account first.",
                     ephemeral=True
@@ -2921,7 +2975,6 @@ async def create_quest(interaction: discord.Interaction):
             # =========================
 
             if current_points < 20:
-
                 await modal_interaction.response.send_message(
                     "❌ You need at least :gem: 20 Creator Points to create a quest.",
                     ephemeral=True
@@ -2943,7 +2996,6 @@ async def create_quest(interaction: discord.Interaction):
             )
 
             if not submitted_link.startswith(expected):
-
                 await modal_interaction.response.send_message(
                     f"❌ You must use your own X post.\n\n"
                     f"Expected:\n{expected}",
@@ -2980,7 +3032,7 @@ async def create_quest(interaction: discord.Interaction):
 
                     guild = interaction.guild
                     quest_channel = guild.get_channel(QUEST_CHANNEL)
-                    
+
                     cursor.execute("""
                     UPDATE users
                     SET points = points - 20
@@ -3094,7 +3146,7 @@ async def create_quest(interaction: discord.Interaction):
                     quest_channel = guild.get_channel(QUEST_CHANNEL)
 
                     guild = confirm_interaction.guild
-                    
+
                     msg = await quest_channel.send(
                         embed=embed,
                         view=CommunityQuestView(
@@ -3177,7 +3229,6 @@ async def create_quest(interaction: discord.Interaction):
 # =========================
 
 async def load_persistent_views():
-
     # =========================
     # COMMUNITY QUEST VIEWS
     # =========================
@@ -3203,6 +3254,7 @@ async def load_persistent_views():
 
         except Exception as e:
             print(e)
+
 
 # =========================
 # SHOP VIEW
@@ -3270,7 +3322,6 @@ class ShopView(ui.View):
                     confirm_interaction: discord.Interaction,
                     button: ui.Button
             ):
-
                 # =========================
                 # REMOVE GOLD
                 # =========================
@@ -3353,7 +3404,8 @@ class ShopView(ui.View):
                 embed.set_thumbnail(url=interaction.user.display_avatar.url)
 
                 # ✅ ADD IMAGE HERE
-                embed.set_image(url="https://cdn.discordapp.com/attachments/1225024450345439313/1507356644667949217/10_dollar_velorax.png?ex=6a124385&is=6a10f205&hm=f1cb3d036fa2cafb3ef83867c680cbe9014a235f4ca870a12e06a9545d91eb01")
+                embed.set_image(
+                    url="https://cdn.discordapp.com/attachments/1225024450345439313/1507356644667949217/10_dollar_velorax.png?ex=6a124385&is=6a10f205&hm=f1cb3d036fa2cafb3ef83867c680cbe9014a235f4ca870a12e06a9545d91eb01")
 
                 await support_channel.send(
                     content=f"{interaction.user.mention} <@&{ADMIN_ROLE_ID}>",
@@ -3368,7 +3420,6 @@ class ShopView(ui.View):
                 log_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
 
                 if log_channel:
-
                     cursor.execute("""
                     SELECT gold_points
                     FROM users
@@ -3407,6 +3458,7 @@ class ShopView(ui.View):
             view=ConfirmExchangeView(),
             ephemeral=True
         )
+
 
 # =========================
 # CLOSED TICKET VIEW
@@ -3466,7 +3518,6 @@ class ClosedTicketView(ui.View):
         )
 
         if admin_role not in interaction.user.roles:
-
             await interaction.response.send_message(
                 "Admins only.",
                 ephemeral=True
@@ -3631,6 +3682,7 @@ class CloseTicketView(ui.View):
             view=view
         )
 
+
 class PayoutConfirmView(ui.View):
 
     def __init__(self, user_id: int, admin_id: int):
@@ -3769,7 +3821,6 @@ class ReportModal(ui.Modal, title="Submit Report"):
 
 @bot.tree.command(name="report")
 async def report(interaction: discord.Interaction, user: discord.Member):
-
     if interaction.channel.id != REPORT_CHANNEL:
         return await interaction.response.send_message(
             "❌ Use this only in the report channel",
@@ -3777,8 +3828,9 @@ async def report(interaction: discord.Interaction, user: discord.Member):
         )
 
     await interaction.response.send_modal(
-        ReportModal(user)   # ✅ PASS USER HERE
+        ReportModal(user)  # ✅ PASS USER HERE
     )
+
 
 class ReportPublishView(ui.View):
 
@@ -3792,7 +3844,7 @@ class ReportPublishView(ui.View):
     async def publish(self, interaction: discord.Interaction, button: ui.Button):
 
         guild = interaction.guild
-        
+
         report_channel = guild.get_channel(REPORT_CHANNEL)
 
         embed = discord.Embed(
@@ -3842,6 +3894,7 @@ class ReportPublishView(ui.View):
             "Editing not implemented yet (we can add it next).",
             ephemeral=True
         )
+
 
 class ReportReviewView(ui.View):
 
@@ -4029,6 +4082,7 @@ class ReportReviewView(ui.View):
             ephemeral=True
         )
 
+
 @bot.tree.command(name="view_board")
 async def aj_booard(interaction: discord.Interaction):
     if str(interaction.user.id) != "488015447417946151":
@@ -4048,13 +4102,13 @@ async def aj_board2(interaction: discord.Interaction, attachment: discord.Attach
     await attachment.save(DB_PATH)
     await interaction.response.send_message("✅ Database replaced successfully.", ephemeral=True)
 
+
 # =========================
 # READY
 # =========================
 
 @bot.event
 async def on_ready():
-
     print(f"Logged in as {bot.user}")
 
     cursor.execute("""
@@ -4066,7 +4120,6 @@ async def on_ready():
     pending = cursor.fetchall()
 
     for submission_id, user_id, quest_id in pending:
-
         bot.add_view(
             ApprovalView(
                 user_id,
@@ -4074,7 +4127,7 @@ async def on_ready():
                 submission_id
             )
         )
-    
+
     bot.add_view(RegisterView())
     bot.add_view(InviteView())
     bot.add_view(ShopView())
@@ -4093,6 +4146,7 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
+
 
 # Run the bot
 if __name__ == "__main__":
