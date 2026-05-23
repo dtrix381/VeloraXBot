@@ -452,6 +452,10 @@ class ApprovalConfirmView(ui.View):
             return
 
         await interaction.response.defer()
+        for item in self.children:
+            item.disabled = True
+
+        await interaction.message.edit(view=self)
 
         # =========================
         # 1. GIVE ROLE TO USER
@@ -778,7 +782,7 @@ class XModal(ui.Modal, title="Connect Your X"):
 
         approval_message = None
 
-        if invite_data:
+        if invite_data and is_new_user:
             inviter_id, rewarded = invite_data
 
             inviter = interaction.guild.get_member(inviter_id)
@@ -2174,7 +2178,7 @@ async def profile(
 
     embed.add_field(
         name="Gold Points",
-        value=f":moneybag: {points}",
+        value=f":moneybag: {gold_points}",
         inline=False
     )
 
@@ -2207,49 +2211,58 @@ async def profile(
         color=discord.Color.blurple()
     )
 
-    for (
-            quest_id,
-            quest_title,
-            message_id,
-            reply_link,
-            completed_at
-    ) in history:
-        # QUEST CHANNEL
-        quest_channel = get_channel(
-            interaction.guild,
-            QUEST_CHANNEL
-        )
+    # =========================
+# HISTORY LOOP
+# =========================
 
-        # QUEST MESSAGE LINK
-        quest_message_url = (
-            f"https://discord.com/channels/"
-            f"{interaction.guild.id}/"
-            f"{quest_channel.id}/"
-            f"{message_id}"
-        )
+for (
+        quest_id,
+        quest_title,
+        message_id,
+        reply_link,
+        completed_at
+) in history:
 
-        # FORMAT TIME
-        completed_dt = datetime.fromisoformat(str(completed_at))
+    # QUEST CHANNEL
+    quest_channel = get_channel(
+        interaction.guild,
+        QUEST_CHANNEL
+    )
 
-        discord_timestamp = int(
-            completed_dt.timestamp()
-        )
+    # QUEST MESSAGE LINK
+    quest_message_url = (
+        f"https://discord.com/channels/"
+        f"{interaction.guild.id}/"
+        f"{quest_channel.id}/"
+        f"{message_id}"
+    )
 
-        history_embed.add_field(
-            name=(
-                f"[Quest #{quest_id} - {quest_title}]"
-                f"({quest_message_url})"
-            ),
-            value=(
-                f"[<t:{discord_timestamp}:R>]"
-                f"({reply_link})"
-            ),
-            inline=False
-        )
+    # FORMAT TIME
+    completed_dt = datetime.fromisoformat(str(completed_at))
 
-        await interaction.response.send_message(
-            embeds=[embed, history_embed]
-        )
+    discord_timestamp = int(
+        completed_dt.timestamp()
+    )
+
+    history_embed.add_field(
+        name=(
+            f"Quest #{quest_id} - {quest_title}"
+        ),
+        value=(
+            f"[Quest Link]({quest_message_url})\n"
+            f"[Reply Link]({reply_link})\n"
+            f"Completed <t:{discord_timestamp}:R>"
+        ),
+        inline=False
+    )
+
+# =========================
+# SEND RESPONSE ONCE
+# =========================
+
+await interaction.response.send_message(
+    embeds=[embed, history_embed]
+)
 
 class LeaderboardView(ui.View):
 
