@@ -442,6 +442,7 @@ class ApprovalConfirmView(ui.View):
     @ui.button(label="Yes", style=discord.ButtonStyle.success, custom_id="confirm_approve_yes")
     async def confirm_yes(self, interaction: discord.Interaction, button: ui.Button):
 
+        guild = interaction.guild
         admin_role = interaction.guild.get_role(self.ADMIN_ROLE_ID)
         if admin_role not in interaction.user.roles:
             await interaction.response.send_message(
@@ -640,6 +641,7 @@ class XModal(ui.Modal, title="Connect Your X"):
 
     async def on_submit(self, interaction: discord.Interaction):
 
+        guild = interaction.guild
         original_username = str(self.username).replace("@", "").strip()
 
         lowercase_username = original_username.lower()
@@ -1473,7 +1475,7 @@ async def setup(interaction: discord.Interaction):
 
     # REGISTER CHANNEL
 
-    register_channel = get_channel_by_name(guild, REGISTER_CHANNEL)
+    register_channel = guild.get_channel(REGISTER_CHANNEL)
     if not register_channel:
         register_channel = await guild.create_text_channel(
             REGISTER_CHANNEL,
@@ -1482,7 +1484,7 @@ async def setup(interaction: discord.Interaction):
 
     # INVITE CHANNEL
 
-    invite_channel = get_channel_by_name(guild, INVITE_CHANNEL)
+    invite_channel = guild.get_channel(INVITE_CHANNEL)
     if not invite_channel:
         invite_channel = await guild.create_text_channel(
             INVITE_CHANNEL,
@@ -1491,7 +1493,7 @@ async def setup(interaction: discord.Interaction):
 
     # QUEST CHANNEL
 
-    quest_channel = get_channel_by_name(guild, QUEST_CHANNEL)
+    quest_channel = guild.get_channel(QUEST_CHANNEL)
     if not quest_channel:
         quest_channel = await guild.create_text_channel(
             QUEST_CHANNEL,
@@ -1500,7 +1502,7 @@ async def setup(interaction: discord.Interaction):
 
     # REPORT CHANNEL
 
-    report_channel = get_channel_by_name(guild, REPORT_CHANNEL)
+    report_channel = guild.get_channel(REPORT_CHANNEL)
     if not report_channel:
         report_channel = await guild.create_text_channel(
             REPORT_CHANNEL,
@@ -1509,14 +1511,14 @@ async def setup(interaction: discord.Interaction):
 
     # LOGS CHANNEL
 
-    logs_channel = get_channel_by_name(guild, LOGS_CHANNEL)
+    logs_channel = guild.get_channel(LOGS_CHANNEL)
     if not logs_channel:
         logs_channel = await guild.create_text_channel(
             LOGS_CHANNEL,
             category=category
         )
 
-    stats_channel = get_channel_by_name(guild, STATS_CHANNEL)
+    stats_channel = guild.get_channel(STATS_CHANNEL)
     if not stats_channel:
         stats_channel = await guild.create_text_channel(
             STATS_CHANNEL,
@@ -1656,7 +1658,7 @@ async def setup(interaction: discord.Interaction):
         )
     # APPROVAL CHANNEL
 
-    approval_channel = get_channel_by_name(guild, APPROVAL_CHANNEL)
+    approval_channel = guild.get_channel(APPROVAL_CHANNEL)
     if not approval_channel:
         approval_channel = await guild.create_text_channel(
             APPROVAL_CHANNEL,
@@ -1841,7 +1843,7 @@ async def setup(interaction: discord.Interaction):
 @bot.tree.command(name="paid_quest")
 async def paid_quest(interaction: discord.Interaction):
 
-    if interaction.channel.name != PAID_QUEST_CHANNEL:
+    if interaction.channel.id != PAID_QUEST_CHANNEL:
 
         quest_channel = get_channel(
             interaction.guild,
@@ -2108,7 +2110,7 @@ async def profile(
         member: discord.Member
 ):
 
-    if interaction.channel.name != STATS_CHANNEL:
+    if interaction.channel.id != STATS_CHANNEL:
         stats_channel = get_channel(
             interaction.guild,
             STATS_CHANNEL
@@ -2366,7 +2368,7 @@ class LeaderboardView(ui.View):
 @bot.tree.command(name="leaderboard")
 async def leaderboard(interaction: discord.Interaction):
 
-    if interaction.channel.name != GOLD_LEADERBOARD_CHANNEL:
+    if interaction.channel.id != GOLD_LEADERBOARD_CHANNEL:
 
         leaderboard_channel = get_channel(
             interaction.guild,
@@ -2717,6 +2719,8 @@ class CommunityQuestView(ui.View):
         # CHECK DUPLICATE CLAIM
         # =========================
 
+        guild = interaction.guild
+        
         cursor.execute("""
         SELECT id
         FROM quest_claims
@@ -3070,6 +3074,8 @@ async def create_quest(interaction: discord.Interaction):
 
                     quest_channel = guild.get_channel(QUEST_CHANNEL)
 
+                    guild = confirm_interaction.guild
+                    
                     msg = await quest_channel.send(
                         embed=embed,
                         view=CommunityQuestView(
@@ -3745,7 +3751,7 @@ class ReportModal(ui.Modal, title="Submit Report"):
 @bot.tree.command(name="report")
 async def report(interaction: discord.Interaction, user: discord.Member):
 
-    if interaction.channel.name != REPORT_CHANNEL:
+    if interaction.channel.id != REPORT_CHANNEL:
         return await interaction.response.send_message(
             "❌ Use this only in the report channel",
             ephemeral=True
