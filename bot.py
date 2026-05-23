@@ -59,7 +59,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # DATABASE
 # =========================
 
-conn = sqlite3.connect(DB_NAME)
+conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 
 cursor.execute("""
