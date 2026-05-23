@@ -560,6 +560,17 @@ class ApprovalConfirmView(ui.View):
         # =========================
         # 7. MOVE TO APPROVED CHANNEL
         # =========================
+        self.original_embed.color = discord.Color.blue()
+        self.original_embed.title = "Creator Registration - Approved ✅"
+        self.original_embed.add_field(
+            name="Approved By",
+            value=interaction.user.mention,
+            inline=False
+        )
+        
+        # =========================
+        # 8. UPDATE ORIGINAL EMBED
+        # =========================
         approved_channel = interaction.guild.get_channel(1507427342967115866)
 
         if approved_channel:
@@ -569,17 +580,6 @@ class ApprovalConfirmView(ui.View):
             await interaction.message.delete()
         except:
             pass
-
-        # =========================
-        # 8. UPDATE ORIGINAL EMBED
-        # =========================
-        self.original_embed.color = discord.Color.blue()
-        self.original_embed.title = "Creator Registration - Approved ✅"
-        self.original_embed.add_field(
-            name="Approved By",
-            value=interaction.user.mention,
-            inline=False
-        )
 
     @ui.button(label="No", style=discord.ButtonStyle.danger, custom_id="confirm_approve_no")
     async def confirm_no(self, interaction: discord.Interaction, button: ui.Button):
@@ -1855,7 +1855,7 @@ async def paid_quest(interaction: discord.Interaction):
         )
 
         await interaction.response.send_message(
-            f"You can only use this command in {quest_channel.mention}",
+            f"You can only use this command in {paid_quest_channel.mention}",
             ephemeral=True
         )
 
