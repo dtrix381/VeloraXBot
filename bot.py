@@ -526,7 +526,7 @@ class ApprovalConfirmView(ui.View):
         # =========================
         # 5. CREATOR LOGS
         # =========================
-        log_channel = discord.utils.get(interaction.guild.text_channels, name="ʟᴏɢs")
+        log_channel = guild.get_channel(LOGS_CHANNEL)
         if log_channel:
             await log_channel.send(
                 f"🎉 **Creator Approved**\n\n"
@@ -538,7 +538,7 @@ class ApprovalConfirmView(ui.View):
         # =========================
         # 6. GOLD LOGS (ONLY IF NOT BOT INVITE)
         # =========================
-        gold_log_channel = discord.utils.get(interaction.guild.text_channels, name="ɢᴏʟᴅ-ʟᴏɢs")
+        gold_log_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
 
         if (
                 gold_log_channel
@@ -743,7 +743,7 @@ class XModal(ui.Modal, title="Connect Your X"):
         # =========================
         # Dynamically look up your stylized channel name
 
-        quest_channel = discord.utils.get(interaction.guild.text_channels, name="ǫᴜᴇsᴛ")
+        quest_channel = guild.get_channel(QUEST_CHANNEL)
         quest_channel_mention = quest_channel.mention if quest_channel else "#ǫᴜᴇsᴛ"
 
         # Build dynamic response message based on reward eligibility
@@ -828,7 +828,7 @@ class XModal(ui.Modal, title="Connect Your X"):
 
         # Dynamic lookup for your stylized log channel name
         try:
-            log_channel = discord.utils.get(interaction.guild.text_channels, name="ʟᴏɢs")
+            log_channel = guild.get_channel(LOGS_CHANNEL)
             if log_channel:
                 await log_channel.send(log_text)
         except Exception as e:
@@ -2811,10 +2811,7 @@ class CommunityQuestView(ui.View):
         # LOG CLAIM
         # =========================
 
-        log_channel = discord.utils.get(
-            interaction.guild.text_channels,
-            name="ʟᴏɢs"
-        )
+        log_channel = guild.get_channel(LOGS_CHANNEL)
 
         if log_channel:
 
@@ -3132,10 +3129,7 @@ async def create_quest(interaction: discord.Interaction):
                     # QUEST CREATION LOG
                     # =========================
 
-                    log_channel = discord.utils.get(
-                        confirm_interaction.guild.text_channels,
-                        name="ʟᴏɢs"
-                    )
+                    log_channel = guild.get_channel(LOGS_CHANNEL)
 
                     if log_channel:
                         await log_channel.send(
@@ -3373,10 +3367,7 @@ class ShopView(ui.View):
                 # LOGS
                 # =========================
 
-                log_channel = discord.utils.get(
-                    guild.text_channels,
-                    name="ɢᴏʟᴅ-ʟᴏɢs"
-                )
+                log_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
 
                 if log_channel:
 
