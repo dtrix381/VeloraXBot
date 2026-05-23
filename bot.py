@@ -59,7 +59,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # DATABASE
 # =========================
 
-conn = sqlite3.connect(DB_PATH)
+conn = sqlite3.connect(DB_NAME)
 cursor = conn.cursor()
 
 cursor.execute("""
@@ -4097,9 +4097,6 @@ async def on_ready():
             for invite in await guild.invites()
         }
 
-# =========================
-# RUN
-# =========================
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
