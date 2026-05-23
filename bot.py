@@ -1887,7 +1887,7 @@ async def paid_quest(
 
         return
 
-    if not has_admin_role(interaction.user):
+        if not has_admin_role(interaction.user):
         await interaction.response.send_message(
             "No permission.",
             ephemeral=True
