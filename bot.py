@@ -3787,6 +3787,8 @@ class ReportPublishView(ui.View):
     @ui.button(label="📤 Publish", style=discord.ButtonStyle.green)
     async def publish(self, interaction: discord.Interaction, button: ui.Button):
 
+        guild = interaction.guild
+        
         report_channel = guild.get_channel(REPORT_CHANNEL)
 
         embed = discord.Embed(
