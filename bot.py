@@ -2260,9 +2260,7 @@ for (
 # SEND RESPONSE ONCE
 # =========================
 
-await interaction.response.send_message(
-    embeds=[embed, history_embed]
-)
+    await interaction.response.send_message(embeds=[embed, history_embed])
 
 class LeaderboardView(ui.View):
 
