@@ -2974,6 +2974,9 @@ async def create_quest(interaction: discord.Interaction):
                     # REMOVE 20 POINTS
                     # =========================
 
+                    guild = interaction.guild
+                    quest_channel = guild.get_channel(QUEST_CHANNEL)
+                    
                     cursor.execute("""
                     UPDATE users
                     SET points = points - 20
