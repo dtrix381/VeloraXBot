@@ -4057,6 +4057,24 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
 
+    cursor.execute("""
+    SELECT id, user_id, quest_id
+    FROM submissions
+    WHERE status = 'pending'
+    """)
+
+    pending = cursor.fetchall()
+
+    for submission_id, user_id, quest_id in pending:
+
+        bot.add_view(
+            ApprovalView(
+                user_id,
+                quest_id,
+                submission_id
+            )
+        )
+    
     bot.add_view(RegisterView())
     bot.add_view(InviteView())
     bot.add_view(ShopView())
