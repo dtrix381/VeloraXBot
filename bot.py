@@ -2212,55 +2212,56 @@ async def profile(
     )
 
     # =========================
-# HISTORY LOOP
-# =========================
+    # HISTORY LOOP
+    # =========================
 
-for (
-        quest_id,
-        quest_title,
-        message_id,
-        reply_link,
-        completed_at
-) in history:
+    for (
+            quest_id,
+            quest_title,
+            message_id,
+            reply_link,
+            completed_at
+    ) in history:
 
-    # QUEST CHANNEL
-    quest_channel = get_channel(
-        interaction.guild,
-        QUEST_CHANNEL
-    )
+        # QUEST CHANNEL
+        quest_channel = get_channel(
+            interaction.guild,
+            QUEST_CHANNEL
+        )
 
-    # QUEST MESSAGE LINK
-    quest_message_url = (
-        f"https://discord.com/channels/"
-        f"{interaction.guild.id}/"
-        f"{quest_channel.id}/"
-        f"{message_id}"
-    )
+        # QUEST MESSAGE LINK
+        quest_message_url = (
+            f"https://discord.com/channels/"
+            f"{interaction.guild.id}/"
+            f"{quest_channel.id}/"
+            f"{message_id}"
+        )
 
-    # FORMAT TIME
-    completed_dt = datetime.fromisoformat(str(completed_at))
+        # FORMAT TIME
+        completed_dt = datetime.fromisoformat(str(completed_at))
 
-    discord_timestamp = int(
-        completed_dt.timestamp()
-    )
+        discord_timestamp = int(
+            completed_dt.timestamp()
+        )
 
-    history_embed.add_field(
-        name=(
-            f"Quest #{quest_id} - {quest_title}"
-        ),
-        value=(
-            f"[Quest Link]({quest_message_url})\n"
-            f"[Reply Link]({reply_link})\n"
-            f"Completed <t:{discord_timestamp}:R>"
-        ),
-        inline=False
-    )
+        history_embed.add_field(
+            name=(
+                f"Quest #{quest_id} - {quest_title}"
+            ),
+            value=(
+                f"[Quest Link]({quest_message_url})\n"
+                f"[Reply Link]({reply_link})\n"
+                f"Completed <t:{discord_timestamp}:R>"
+            ),
+            inline=False
+        )
 
-# =========================
-# SEND RESPONSE ONCE
-# =========================
+    # =========================
+    # SEND RESPONSE ONCE
+    # =========================
 
     await interaction.response.send_message(embeds=[embed, history_embed])
+
 
 class LeaderboardView(ui.View):
 
