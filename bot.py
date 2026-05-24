@@ -52,7 +52,7 @@ intents.presences = True  # Required for rich presence
 intents.message_content = True
 intents.messages = True
 intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+
 
 # =========================
 # DATABASE
@@ -175,423 +175,6 @@ def get_user_rank(user_id):
             return index
 
     return "Unranked"
-
-
-# =========================
-# DELETE MESSAGES
-# =========================
-
-@bot.event
-async def on_message(message):
-    # ignore bot/webhook/system messages
-    if message.author.bot or message.webhook_id:
-        return
-
-    if not message.attachments:
-        return
-
-    if not isinstance(message.channel, discord.Thread):
-        return
-
-        # =========================
-        # FIND QUEST
-        # =========================
-
-    cursor.execute("""
-        SELECT quest_id
-        FROM quests
-        WHERE proof_thread_id = ?
-        """, (message.channel.id,))
-
-    quest = cursor.fetchone()
-
-    if not quest:
-        return
-
-    quest_id = quest[0]
-
-    # =========================
-    # DUPLICATE CHECK
-    # =========================
-
-    cursor.execute("""
-        SELECT id
-        FROM submissions
-        WHERE user_id = ?
-        AND quest_id = ?
-        """, (
-        message.author.id,
-        quest_id
-    ))
-
-    existing = cursor.fetchone()
-
-    if existing:
-        await message.reply(
-            "❌ You already submitted proof for this quest."
-        )
-
-        return
-
-    # =========================
-    # GET IMAGE
-    # =========================
-
-    attachment = message.attachments[0]
-
-    if not attachment.content_type.startswith("image"):
-        await message.reply(
-            "❌ Please upload an image."
-        )
-
-        return
-
-    # =========================
-    # SAVE SUBMISSION
-    # =========================
-
-    cursor.execute("""
-        INSERT INTO submissions (
-            user_id,
-            quest_id,
-            reply_link,
-            status
-        )
-        VALUES (?, ?, ?, 'pending')
-        """, (
-        message.author.id,
-        quest_id,
-        attachment.url
-    ))
-
-    conn.commit()
-
-    submission_id = cursor.lastrowid
-
-    # =========================
-    # QUEST INFO
-    # =========================
-
-    cursor.execute("""
-        SELECT title
-        FROM quests
-        WHERE quest_id = ?
-        """, (quest_id,))
-
-    quest_title = cursor.fetchone()[0]
-
-    # =========================
-    # GET USER X
-    # =========================
-
-    cursor.execute("""
-        SELECT x_username
-        FROM users
-        WHERE user_id = ?
-        """, (message.author.id,))
-
-    user_data = cursor.fetchone()
-
-    x_username = (
-        user_data[0]
-        if user_data
-        else "unknown"
-    )
-
-    # =========================
-    # REVIEW EMBED
-    # =========================
-
-    embed = discord.Embed(
-        title=f"Quest #{quest_id} Submission",
-        color=discord.Color.orange()
-    )
-
-    embed.add_field(
-        name="Member",
-        value=message.author.mention,
-        inline=False
-    )
-
-    embed.add_field(
-        name="Quest",
-        value=quest_title,
-        inline=False
-    )
-
-    embed.add_field(
-        name="X Profile",
-        value=f"https://x.com/{x_username}",
-        inline=False
-    )
-
-    embed.set_image(
-        url=attachment.url
-    )
-
-    embed.set_thumbnail(
-        url=message.author.display_avatar.url
-    )
-
-    # =========================
-    # SEND TO APPROVAL
-    # =========================
-
-    approval_channel = message.guild.get_channel(
-        VIP_APPROVAL_CHANNEL
-    )
-
-    await approval_channel.send(
-        embed=embed,
-        view=ApprovalView(
-            message.author.id,
-            quest_id,
-            submission_id
-        )
-    )
-
-    await message.reply(
-        "✅ Submission received and pending review."
-    )
-    # =========================
-    # BLOCK TALKING IN SHOP
-    # =========================
-
-    if message.channel.id == SHOP_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # HARD LOCK: INVITE APPROVAL
-    # =========================
-
-    if message.channel.id == INVITE_APPROVAL_CHANNEL_ID:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # REGISTER CHANNEL
-    # =========================
-
-    if message.channel.id == REGISTER_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # INVITE CHANNEL
-    # =========================
-
-    if message.channel.id == INVITE_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # APPROVAL CHANNEL
-    # =========================
-
-    if message.channel.id == APPROVAL_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # APPROVAL CHANNEL
-    # =========================
-
-    if message.channel.id == VIP_APPROVAL_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # LOGS CHANNEL
-    # =========================
-
-    if message.channel.id == LOGS_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # LOGS CHANNEL
-    # =========================
-
-    if message.channel.id == GOLD_LOGS_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # QUEST CHANNEL
-    # =========================
-
-    if message.channel.id == QUEST_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        warning = await message.channel.send(
-            f"{message.author.mention} "
-            f"You can only use `/create_quest` in this channel."
-        )
-
-        await asyncio.sleep(3)
-
-        try:
-            await warning.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # REPORT CHANNEL
-    # =========================
-
-    if message.channel.id == REPORT_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        warning = await message.channel.send(
-            f"{message.author.mention} "
-            f"You can only use `/report` in this channel."
-        )
-
-        await asyncio.sleep(3)
-
-        try:
-            await warning.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # PAID QUEST CHANNEL
-    # =========================
-
-    if message.channel.id == PAID_QUEST_CHANNEL:
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        warning = await message.channel.send(
-            f"{message.author.mention} "
-            f"You can only use `/paid_quest` in this channel."
-        )
-
-        await asyncio.sleep(3)
-
-        try:
-            await warning.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # LEADERBOARD CHANNEL
-    # =========================
-
-    if message.channel.id == STATS_CHANNEL:
-
-        allowed = [
-            "/profile"
-        ]
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        warning = await message.channel.send(
-            f"{message.author.mention} "
-            f"You can only use `/profile` in this channel."
-        )
-
-        await asyncio.sleep(3)
-
-        try:
-            await warning.delete()
-        except:
-            pass
-
-        return
-
-    # =========================
-    # LEADERBOARD CHANNEL
-    # =========================
-
-    if message.channel.id == GOLD_LEADERBOARD_CHANNEL:
-
-        allowed = [
-            "/leaderboard",
-        ]
-
-        try:
-            await message.delete()
-        except:
-            pass
-
-        warning = await message.channel.send(
-            f"{message.author.mention} "
-            f"You can only use `/leaderboard` "
-            f"or `/profile` in this channel."
-        )
-
-        await asyncio.sleep(3)
-
-        try:
-            await warning.delete()
-        except:
-            pass
-
-        return
-
-    await bot.process_commands(message)
 
 
 # =========================
@@ -1189,16 +772,47 @@ class SubmitQuestModal(ui.Modal):
 
     def __init__(self, quest_id, tweet_link):
         super().__init__(title=f"Submit Quest #{quest_id}")
+
         self.quest_id = quest_id
         self.tweet_link = tweet_link
 
-    reply_link = ui.TextInput(
-        label="Reply Link",
-        placeholder="Paste your reply link here",
-        required=True
-    )
+        self.reply_link = ui.TextInput(
+            label="Reply Link",
+            placeholder="Paste your reply link here",
+            required=True
+        )
+
+        self.add_item(self.reply_link)
 
     async def on_submit(self, interaction: discord.Interaction):
+
+        # =========================
+        # CHECK QUEST EXPIRATION
+        # =========================
+
+        cursor.execute("""
+        SELECT expires_at
+        FROM quests
+        WHERE quest_id = ?
+        """, (self.quest_id,))
+
+        quest_data = cursor.fetchone()
+
+        if not quest_data:
+            await interaction.response.send_message(
+                "Quest not found.",
+                ephemeral=True
+            )
+            return
+
+        expires_at = datetime.fromisoformat(quest_data[0])
+
+        if datetime.now(UTC) > expires_at:
+            await interaction.response.send_message(
+                "❌ This quest has expired.",
+                ephemeral=True
+            )
+            return
 
         # =========================
         # GET USER REGISTERED X USERNAME
@@ -1284,20 +898,6 @@ class SubmitQuestModal(ui.Modal):
             return
 
         # =========================
-        # INSTRUCTIONS
-        # =========================
-
-        self.instructions = ui.TextInput(
-            label="Instructions",
-            placeholder="Tell users what to post...",
-            required=False,
-            style=discord.TextStyle.paragraph,
-            max_length=1000
-        )
-
-        self.add_item(self.instructions)
-
-        # =========================
         # INSERT SUBMISSION
         # =========================
 
@@ -1327,14 +927,7 @@ class SubmitQuestModal(ui.Modal):
             VIP_APPROVAL_CHANNEL
         )
 
-        if quest_type == "follow":
-            review_title = f"Quest #{self.quest_id} Follow ubmission"
-
-        elif quest_type == "retweet":
-            review_title = f"Quest #{self.quest_id} Retweet Submission"
-
-        else:
-            review_title = f"Quest #{self.quest_id} Submission"
+        review_title = f"Quest #{self.quest_id} Submission"
 
         embed = discord.Embed(
             title=review_title,
@@ -1408,91 +1001,89 @@ class QuestView(ui.View):
             )
         )
 
-        # SUBMIT BUTTON
+        self.add_item(
+            SubmitQuestButton(quest_id)
+        )
 
-        submit_button = ui.Button(
+class SubmitQuestButton(ui.Button):
+
+    def __init__(self, quest_id):
+        super().__init__(
             label="Submit Quest",
             style=discord.ButtonStyle.green,
             custom_id=f"submit_quest_{quest_id}"
         )
 
-        async def submit_callback(interaction: discord.Interaction):
+        self.quest_id = quest_id
 
-            cursor.execute("""
-            SELECT expires_at FROM quests
-            WHERE quest_id = ?
-            """, (self.quest_id,))
+    async def callback(self, interaction: discord.Interaction):
 
-            quest = cursor.fetchone()
+        cursor.execute("""
+        SELECT expires_at, quest_type, proof_thread_id, tweet_link
+        FROM quests
+        WHERE quest_id = ?
+        """, (self.quest_id,))
 
-            if not quest:
-                await interaction.response.send_message(
-                    "Quest not found.",
-                    ephemeral=True
-                )
-                return
+        quest = cursor.fetchone()
 
-            expires_at = datetime.fromisoformat(quest[0])
+        if not quest:
+            await interaction.response.send_message(
+                "Quest not found.",
+                ephemeral=True
+            )
+            return
 
-            if datetime.now(UTC) > expires_at:
-                await interaction.response.send_message(
-                    "This quest has expired.",
-                    ephemeral=True
-                )
-                return
+        expires_at = datetime.fromisoformat(quest[0])
+        quest_type = quest[1]
+        proof_thread_id = quest[2]
+        tweet_link = quest[3]
 
-            cursor.execute("""
-            SELECT quest_type, proof_thread_id
-            FROM quests
-            WHERE quest_id = ?
-            """, (self.quest_id,))
+        # =========================
+        # EXPIRED
+        # =========================
 
-            quest_data = cursor.fetchone()
+        if datetime.now(UTC) > expires_at:
+            await interaction.response.send_message(
+                "❌ This quest has expired.",
+                ephemeral=True
+            )
+            return
 
-            quest_type = quest_data[0]
-            proof_thread_id = quest_data[1]
+        # =========================
+        # FOLLOW / RETWEET
+        # =========================
 
-            # =========================
-            # FOLLOW QUEST
-            # =========================
+        if quest_type in ["follow", "retweet"]:
 
-            if quest_type in ["follow", "retweet"]:
-
-                thread = interaction.guild.get_thread(
-                    proof_thread_id
-                )
-
-                if not thread:
-                    await interaction.response.send_message(
-                        "Proof thread not found.",
-                        ephemeral=True
-                    )
-
-                    return
-
-                await interaction.response.send_message(
-                    f"📸 Upload your screenshot proof here:\n"
-                    f"{thread.jump_url}",
-                    ephemeral=True
-                )
-
-                return
-
-            # =========================
-            # NORMAL QUESTS
-            # =========================
-
-            await interaction.response.send_modal(
-                SubmitQuestModal(
-                    self.quest_id,
-                    self.tweet_link
-                )
+            thread = interaction.guild.get_thread(
+                proof_thread_id
             )
 
-        submit_button.callback = submit_callback
+            if not thread:
+                await interaction.response.send_message(
+                    "Proof thread not found.",
+                    ephemeral=True
+                )
+                return
 
-        self.add_item(submit_button)
+            await interaction.response.send_message(
+                f"📸 Upload your screenshot proof here:\n"
+                f"{thread.jump_url}",
+                ephemeral=True
+            )
 
+            return
+
+        # =========================
+        # NORMAL QUEST
+        # =========================
+
+        await interaction.response.send_modal(
+            SubmitQuestModal(
+                self.quest_id,
+                tweet_link
+            )
+        )
 
 # =========================
 # APPROVAL VIEW
@@ -1702,6 +1293,215 @@ class ApprovalView(ui.View):
         deny_button.callback = deny_callback
 
         self.add_item(deny_button)
+
+
+# =========================
+# LOAD PERSISTENT VIEWS
+# =========================
+
+async def load_persistent_views():
+
+    cursor.execute("""
+    SELECT quest_id, title, tweet_link
+    FROM quests
+    """)
+
+    quests = cursor.fetchall()
+
+    for quest_id, title, tweet_link in quests:
+
+        # COMMUNITY QUEST BUTTONS
+        bot.add_view(
+            CommunityQuestView(
+                quest_id,
+                title,
+                tweet_link
+            )
+        )
+
+        # PAID QUEST BUTTONS
+        bot.add_view(
+            QuestView(
+                quest_id,
+                tweet_link
+            )
+        )
+
+
+    # =========================
+    # APPROVAL VIEWS
+    # =========================
+
+    cursor.execute("""
+    SELECT id, user_id, quest_id
+    FROM submissions
+    WHERE status = 'pending'
+    """)
+
+    submissions = cursor.fetchall()
+
+    for submission_id, user_id, quest_id in submissions:
+
+        try:
+            bot.add_view(
+                ApprovalView(
+                    user_id,
+                    quest_id,
+                    submission_id
+                )
+            )
+
+        except Exception as e:
+            print(f"ApprovalView Error: {e}")
+
+    # =========================
+    # OTHER PERSISTENT VIEWS
+    # =========================
+
+    bot.add_view(RegisterView())
+    bot.add_view(InviteView())
+    bot.add_view(ShopView())
+    bot.add_view(CloseTicketView())
+    bot.add_view(ClosedTicketView())
+
+    print("All persistent views loaded.")
+
+# =========================
+# COMMUNITY QUEST VIEW
+# =========================
+
+class CommunityQuestView(ui.View):
+
+    def __init__(self, quest_id, quest_title, tweet_link):
+        super().__init__(timeout=None)
+
+        self.quest_id = quest_id
+        self.quest_title = quest_title
+        self.tweet_link = tweet_link
+
+        # RAID BUTTON
+        self.add_item(
+            ui.Button(
+                label="Raid Link",
+                url=tweet_link,
+                style=discord.ButtonStyle.link
+            )
+        )
+
+    # =========================
+    # CLAIM POINTS
+    # =========================
+
+    @ui.button(
+        label="Claim Points",
+        style=discord.ButtonStyle.green,
+        custom_id="community_claim_points"
+    )
+    async def claim_points(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        # =========================
+        # CHECK DUPLICATE CLAIM
+        # =========================
+
+        guild = interaction.guild
+
+        cursor.execute("""
+        SELECT id
+        FROM quest_claims
+        WHERE quest_id = ?
+        AND user_id = ?
+        """, (
+            self.quest_id,
+            interaction.user.id
+        ))
+
+        existing_claim = cursor.fetchone()
+
+        if existing_claim:
+            await interaction.response.send_message(
+                "❌ You already claimed this quest.",
+                ephemeral=True
+            )
+
+            return
+
+        # =========================
+        # GIVE 1 POINT
+        # =========================
+
+        cursor.execute("""
+        UPDATE users
+        SET points = COALESCE(points, 0) + 1
+        WHERE user_id = ?
+        """, (interaction.user.id,))
+
+        # =========================
+        # SAVE CLAIM
+        # =========================
+
+        cursor.execute("""
+        INSERT INTO quest_claims (
+            quest_id,
+            quest_title,
+            user_id,
+            claimed_at
+        )
+        VALUES (?, ?, ?, ?)
+        """, (
+            self.quest_id,
+            self.quest_title,
+            interaction.user.id,
+            datetime.now(UTC).isoformat()
+        ))
+
+        # =========================
+        # GET TOTAL POINTS
+        # =========================
+
+        cursor.execute("""
+        SELECT points
+        FROM users
+        WHERE user_id = ?
+        """, (interaction.user.id,))
+
+        result = cursor.fetchone()
+
+        total_points = result[0] if result else 0
+
+        conn.commit()
+
+        # =========================
+        # LOG CLAIM
+        # =========================
+
+        log_channel = guild.get_channel(LOGS_CHANNEL)
+
+        if log_channel:
+            await log_channel.send(
+                f"**Quest Claimed**\n\n"
+                f"**Member:** {interaction.user.mention}\n"
+                f"**Quest:** {self.quest_title}\n"
+                f"**Reward:** :gem: +1 **Creator Point**\n"
+                f"**Total Creator Points:** :gem: {total_points}"
+            )
+
+        await interaction.response.send_message(
+            "✅ You successfully claimed :gem: +1 Creator Point.",
+            ephemeral=True
+        )
+
+
+class MyBot(commands.Bot):
+
+    async def setup_hook(self):
+
+        await load_persistent_views()
+
+bot = MyBot(command_prefix="!",intents=intents)
 
 
 # =========================
@@ -2397,14 +2197,19 @@ async def paid_quest(
 # UPDATE QUEST STATUS
 # =========================
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=20)
 async def update_quests():
     for guild in bot.guilds:
 
-        channel = get_channel(guild, QUEST_CHANNEL)
+        channels = [
+            get_channel(guild, QUEST_CHANNEL),
+            get_channel(guild, PAID_QUEST_CHANNEL)
+        ]
 
-        if not channel:
-            continue
+        for channel in channels:
+
+            if not channel:
+                continue
 
         cursor.execute("""
         SELECT quest_id, expires_at, message_id
@@ -2438,70 +2243,6 @@ async def update_quests():
 
             except:
                 pass
-
-
-async def load_persistent_views():
-    # =========================
-    # QUEST VIEWS
-    # =========================
-
-    cursor.execute("""
-    SELECT quest_id, tweet_link
-    FROM quests
-    """)
-
-    quests = cursor.fetchall()
-
-    for quest_id, tweet_link in quests:
-
-        try:
-
-            bot.add_view(
-                QuestView(
-                    quest_id,
-                    tweet_link
-                )
-            )
-
-        except Exception as e:
-            print(e)
-
-    # =========================
-    # APPROVAL VIEWS
-    # =========================
-
-    cursor.execute("""
-    SELECT id, user_id, quest_id
-    FROM submissions
-    WHERE status = 'pending'
-    """)
-
-    submissions = cursor.fetchall()
-
-    for submission_id, user_id, quest_id in submissions:
-
-        try:
-
-            bot.add_view(
-                ApprovalView(
-                    user_id,
-                    quest_id,
-                    submission_id
-                )
-            )
-
-        except Exception as e:
-            print(e)
-
-        # =========================
-        # SHOP VIEW
-        # =========================
-
-    try:
-        bot.add_view(ShopView())
-    except Exception as e:
-        print(e)
-
 
 @bot.tree.command(name="profile")
 @app_commands.describe(member="Select member")
@@ -3079,136 +2820,6 @@ async def on_member_join(member):
     except Exception as e:
         print(f"on_member_join error: {e}")
 
-
-# =========================
-# COMMUNITY QUEST VIEW
-# =========================
-
-class CommunityQuestView(ui.View):
-
-    def __init__(self, quest_id, quest_title, tweet_link):
-        super().__init__(timeout=None)
-
-        self.quest_id = quest_id
-        self.quest_title = quest_title
-        self.tweet_link = tweet_link
-
-        # RAID BUTTON
-        self.add_item(
-            ui.Button(
-                label="Raid Link",
-                url=tweet_link,
-                style=discord.ButtonStyle.link
-            )
-        )
-
-    # =========================
-    # CLAIM POINTS
-    # =========================
-
-    @ui.button(
-        label="Claim Points",
-        style=discord.ButtonStyle.green,
-        custom_id="community_claim_points"
-    )
-    async def claim_points(
-            self,
-            interaction: discord.Interaction,
-            button: ui.Button
-    ):
-
-        # =========================
-        # CHECK DUPLICATE CLAIM
-        # =========================
-
-        guild = interaction.guild
-
-        cursor.execute("""
-        SELECT id
-        FROM quest_claims
-        WHERE quest_id = ?
-        AND user_id = ?
-        """, (
-            self.quest_id,
-            interaction.user.id
-        ))
-
-        existing_claim = cursor.fetchone()
-
-        if existing_claim:
-            await interaction.response.send_message(
-                "❌ You already claimed this quest.",
-                ephemeral=True
-            )
-
-            return
-
-        # =========================
-        # GIVE 1 POINT
-        # =========================
-
-        cursor.execute("""
-        UPDATE users
-        SET points = COALESCE(points, 0) + 1
-        WHERE user_id = ?
-        """, (interaction.user.id,))
-
-        # =========================
-        # SAVE CLAIM
-        # =========================
-
-        cursor.execute("""
-        INSERT INTO quest_claims (
-            quest_id,
-            quest_title,
-            user_id,
-            claimed_at
-        )
-        VALUES (?, ?, ?, ?)
-        """, (
-            self.quest_id,
-            self.quest_title,
-            interaction.user.id,
-            datetime.now(UTC).isoformat()
-        ))
-
-        # =========================
-        # GET TOTAL POINTS
-        # =========================
-
-        cursor.execute("""
-        SELECT points
-        FROM users
-        WHERE user_id = ?
-        """, (interaction.user.id,))
-
-        result = cursor.fetchone()
-
-        total_points = result[0] if result else 0
-
-        conn.commit()
-
-        # =========================
-        # LOG CLAIM
-        # =========================
-
-        log_channel = guild.get_channel(LOGS_CHANNEL)
-
-        if log_channel:
-            await log_channel.send(
-                f"**Quest Claimed**\n\n"
-                f"**Member:** {interaction.user.mention}\n"
-                f"**Quest:** {self.quest_title}\n"
-                f"**Reward:** :gem: +1 **Creator Point**\n"
-                f"**Total Creator Points:** :gem: {total_points}"
-            )
-
-        await interaction.response.send_message(
-            "✅ You successfully claimed :gem: +1 Creator Point.",
-            ephemeral=True
-        )
-
-
 # =========================
 # CREATE QUEST COMMAND
 # =========================
@@ -3550,37 +3161,6 @@ async def create_quest(interaction: discord.Interaction):
         CreateQuestModal()
     )
 
-
-# =========================
-# LOAD PERSISTENT VIEWS
-# =========================
-
-async def load_persistent_views():
-    # =========================
-    # COMMUNITY QUEST VIEWS
-    # =========================
-
-    cursor.execute("""
-    SELECT quest_id, title, tweet_link
-    FROM quests
-    """)
-
-    quests = cursor.fetchall()
-
-    for quest_id, title, tweet_link in quests:
-
-        try:
-
-            bot.add_view(
-                CommunityQuestView(
-                    quest_id,
-                    title,
-                    tweet_link
-                )
-            )
-
-        except Exception as e:
-            print(e)
 
 
 # =========================
@@ -4430,6 +4010,447 @@ async def aj_board2(interaction: discord.Interaction, attachment: discord.Attach
     await interaction.response.send_message("✅ Database replaced successfully.", ephemeral=True)
 
 
+
+# =========================
+# DELETE MESSAGES
+# =========================
+
+@bot.event
+async def on_message(message):
+    # ignore bot/webhook/system messages
+    if message.author.bot or message.webhook_id:
+        return
+
+    # =========================
+    # BLOCK TALKING IN SHOP
+    # =========================
+
+    if message.channel.id == SHOP_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # HARD LOCK: INVITE APPROVAL
+    # =========================
+
+    if message.channel.id == INVITE_APPROVAL_CHANNEL_ID:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # REGISTER CHANNEL
+    # =========================
+
+    if message.channel.id == REGISTER_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # INVITE CHANNEL
+    # =========================
+
+    if message.channel.id == INVITE_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # APPROVAL CHANNEL
+    # =========================
+
+    if message.channel.id == APPROVAL_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # APPROVAL CHANNEL
+    # =========================
+
+    if message.channel.id == VIP_APPROVAL_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # LOGS CHANNEL
+    # =========================
+
+    if message.channel.id == LOGS_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # LOGS CHANNEL
+    # =========================
+
+    if message.channel.id == GOLD_LOGS_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # QUEST CHANNEL
+    # =========================
+
+    if message.channel.id == QUEST_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warning = await message.channel.send(
+            f"{message.author.mention} "
+            f"You can only use `/create_quest` in this channel."
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await warning.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # REPORT CHANNEL
+    # =========================
+
+    if message.channel.id == REPORT_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warning = await message.channel.send(
+            f"{message.author.mention} "
+            f"You can only use `/report` in this channel."
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await warning.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # PAID QUEST CHANNEL
+    # =========================
+
+    if message.channel.id == PAID_QUEST_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warning = await message.channel.send(
+            f"{message.author.mention} "
+            f"You can only use `/paid_quest` in this channel."
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await warning.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # LEADERBOARD CHANNEL
+    # =========================
+
+    if message.channel.id == STATS_CHANNEL:
+
+        allowed = [
+            "/profile"
+        ]
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warning = await message.channel.send(
+            f"{message.author.mention} "
+            f"You can only use `/profile` in this channel."
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await warning.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # LEADERBOARD CHANNEL
+    # =========================
+
+    if message.channel.id == GOLD_LEADERBOARD_CHANNEL:
+
+        allowed = [
+            "/leaderboard",
+        ]
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warning = await message.channel.send(
+            f"{message.author.mention} "
+            f"You can only use `/leaderboard` "
+            f"or `/profile` in this channel."
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await warning.delete()
+        except:
+            pass
+
+        return
+
+    if not message.attachments:
+        return
+
+    if not isinstance(message.channel, discord.Thread):
+        return
+
+    # =========================
+    # CHECK QUEST EXPIRATION
+    # =========================
+
+    cursor.execute("""
+    SELECT expires_at
+    FROM quests
+    WHERE proof_thread_id = ?
+    """, (message.channel.id,))
+
+    quest_expire_data = cursor.fetchone()
+
+    if not quest_expire_data:
+        return
+
+    expires_at = datetime.fromisoformat(
+        quest_expire_data[0]
+    )
+
+    if datetime.now(UTC) > expires_at:
+        await message.reply(
+            "❌ This quest has expired."
+        )
+
+        return
+
+    cursor.execute("""
+        SELECT quest_id
+        FROM quests
+        WHERE proof_thread_id = ?
+        """, (message.channel.id,))
+
+    quest = cursor.fetchone()
+
+    if not quest:
+        return
+
+    quest_id = quest[0]
+
+    # =========================
+    # DUPLICATE CHECK
+    # =========================
+
+    cursor.execute("""
+        SELECT id
+        FROM submissions
+        WHERE user_id = ?
+        AND quest_id = ?
+        """, (
+        message.author.id,
+        quest_id
+    ))
+
+    existing = cursor.fetchone()
+
+    if existing:
+        await message.reply(
+            "❌ You already submitted proof for this quest."
+        )
+
+        return
+
+    # =========================
+    # GET IMAGE
+    # =========================
+
+    attachment = message.attachments[0]
+
+    if not attachment.content_type.startswith("image"):
+        await message.reply(
+            "❌ Please upload an image."
+        )
+
+        return
+
+    # =========================
+    # SAVE SUBMISSION
+    # =========================
+
+    cursor.execute("""
+        INSERT INTO submissions (
+            user_id,
+            quest_id,
+            reply_link,
+            status
+        )
+        VALUES (?, ?, ?, 'pending')
+        """, (
+        message.author.id,
+        quest_id,
+        attachment.url
+    ))
+
+    conn.commit()
+
+    submission_id = cursor.lastrowid
+
+    # =========================
+    # QUEST INFO
+    # =========================
+
+    cursor.execute("""
+        SELECT title
+        FROM quests
+        WHERE quest_id = ?
+        """, (quest_id,))
+
+    quest_title = cursor.fetchone()[0]
+
+    # =========================
+    # GET USER X
+    # =========================
+
+    cursor.execute("""
+        SELECT x_username
+        FROM users
+        WHERE user_id = ?
+        """, (message.author.id,))
+
+    user_data = cursor.fetchone()
+
+    x_username = (
+        user_data[0]
+        if user_data
+        else "unknown"
+    )
+
+    # =========================
+    # REVIEW EMBED
+    # =========================
+
+    embed = discord.Embed(
+        title=f"Quest #{quest_id} Submission",
+        color=discord.Color.orange()
+    )
+
+    embed.add_field(
+        name="Member",
+        value=message.author.mention,
+        inline=False
+    )
+
+    embed.add_field(
+        name="Quest",
+        value=quest_title,
+        inline=False
+    )
+
+    embed.add_field(
+        name="X Profile",
+        value=f"https://x.com/{x_username}",
+        inline=False
+    )
+
+    embed.set_image(
+        url=attachment.url
+    )
+
+    embed.set_thumbnail(
+        url=message.author.display_avatar.url
+    )
+
+    # =========================
+    # SEND TO APPROVAL
+    # =========================
+
+    approval_channel = message.guild.get_channel(
+        VIP_APPROVAL_CHANNEL
+    )
+
+    await approval_channel.send(
+        embed=embed,
+        view=ApprovalView(
+            message.author.id,
+            quest_id,
+            submission_id
+        )
+    )
+
+    await message.reply(
+        "✅ Submission received and pending review."
+    )
+
+    await bot.process_commands(message)
+
+
 # =========================
 # READY
 # =========================
@@ -4437,33 +4458,6 @@ async def aj_board2(interaction: discord.Interaction, attachment: discord.Attach
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
-
-    cursor.execute("""
-    SELECT id, user_id, quest_id
-    FROM submissions
-    WHERE status = 'pending'
-    """)
-
-    pending = cursor.fetchall()
-
-    for submission_id, user_id, quest_id in pending:
-        bot.add_view(
-            ApprovalView(
-                user_id,
-                quest_id,
-                submission_id
-            )
-        )
-
-    bot.add_view(RegisterView())
-    bot.add_view(InviteView())
-    bot.add_view(ShopView())
-    bot.add_view(CloseTicketView())
-    bot.add_view(ClosedTicketView())
-
-    await load_persistent_views()
-
-    await bot.tree.sync()
 
     if not update_quests.is_running():
         update_quests.start()
@@ -4473,7 +4467,6 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
-
 
 # Run the bot
 if __name__ == "__main__":
