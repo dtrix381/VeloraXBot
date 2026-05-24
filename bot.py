@@ -187,6 +187,172 @@ async def on_message(message):
     if message.author.bot or message.webhook_id:
         return
 
+    if not message.attachments:
+        return
+
+    if not isinstance(message.channel, discord.Thread):
+        return
+
+        # =========================
+        # FIND QUEST
+        # =========================
+
+    cursor.execute("""
+        SELECT quest_id
+        FROM quests
+        WHERE proof_thread_id = ?
+        """, (message.channel.id,))
+
+    quest = cursor.fetchone()
+
+    if not quest:
+        return
+
+    quest_id = quest[0]
+
+    # =========================
+    # DUPLICATE CHECK
+    # =========================
+
+    cursor.execute("""
+        SELECT id
+        FROM submissions
+        WHERE user_id = ?
+        AND quest_id = ?
+        """, (
+        message.author.id,
+        quest_id
+    ))
+
+    existing = cursor.fetchone()
+
+    if existing:
+        await message.reply(
+            "❌ You already submitted proof for this quest."
+        )
+
+        return
+
+    # =========================
+    # GET IMAGE
+    # =========================
+
+    attachment = message.attachments[0]
+
+    if not attachment.content_type.startswith("image"):
+        await message.reply(
+            "❌ Please upload an image."
+        )
+
+        return
+
+    # =========================
+    # SAVE SUBMISSION
+    # =========================
+
+    cursor.execute("""
+        INSERT INTO submissions (
+            user_id,
+            quest_id,
+            reply_link,
+            status
+        )
+        VALUES (?, ?, ?, 'pending')
+        """, (
+        message.author.id,
+        quest_id,
+        attachment.url
+    ))
+
+    conn.commit()
+
+    submission_id = cursor.lastrowid
+
+    # =========================
+    # QUEST INFO
+    # =========================
+
+    cursor.execute("""
+        SELECT title
+        FROM quests
+        WHERE quest_id = ?
+        """, (quest_id,))
+
+    quest_title = cursor.fetchone()[0]
+
+    # =========================
+    # GET USER X
+    # =========================
+
+    cursor.execute("""
+        SELECT x_username
+        FROM users
+        WHERE user_id = ?
+        """, (message.author.id,))
+
+    user_data = cursor.fetchone()
+
+    x_username = (
+        user_data[0]
+        if user_data
+        else "unknown"
+    )
+
+    # =========================
+    # REVIEW EMBED
+    # =========================
+
+    embed = discord.Embed(
+        title=f"Quest #{quest_id} Submission",
+        color=discord.Color.orange()
+    )
+
+    embed.add_field(
+        name="Member",
+        value=message.author.mention,
+        inline=False
+    )
+
+    embed.add_field(
+        name="Quest",
+        value=quest_title,
+        inline=False
+    )
+
+    embed.add_field(
+        name="X Profile",
+        value=f"https://x.com/{x_username}",
+        inline=False
+    )
+
+    embed.set_image(
+        url=attachment.url
+    )
+
+    embed.set_thumbnail(
+        url=message.author.display_avatar.url
+    )
+
+    # =========================
+    # SEND TO APPROVAL
+    # =========================
+
+    approval_channel = message.guild.get_channel(
+        VIP_APPROVAL_CHANNEL
+    )
+
+    await approval_channel.send(
+        embed=embed,
+        view=ApprovalView(
+            message.author.id,
+            quest_id,
+            submission_id
+        )
+    )
+
+    await message.reply(
+        "✅ Submission received and pending review."
+    )
     # =========================
     # BLOCK TALKING IN SHOP
     # =========================
@@ -1021,9 +1187,10 @@ class InviteView(ui.View):
 
 class SubmitQuestModal(ui.Modal):
 
-    def __init__(self, quest_id):
+    def __init__(self, quest_id, tweet_link):
         super().__init__(title=f"Submit Quest #{quest_id}")
         self.quest_id = quest_id
+        self.tweet_link = tweet_link
 
     reply_link = ui.TextInput(
         label="Reply Link",
@@ -1117,6 +1284,20 @@ class SubmitQuestModal(ui.Modal):
             return
 
         # =========================
+        # INSTRUCTIONS
+        # =========================
+
+        self.instructions = ui.TextInput(
+            label="Instructions",
+            placeholder="Tell users what to post...",
+            required=False,
+            style=discord.TextStyle.paragraph,
+            max_length=1000
+        )
+
+        self.add_item(self.instructions)
+
+        # =========================
         # INSERT SUBMISSION
         # =========================
 
@@ -1146,10 +1327,20 @@ class SubmitQuestModal(ui.Modal):
             VIP_APPROVAL_CHANNEL
         )
 
+        if quest_type == "follow":
+            review_title = f"Quest #{self.quest_id} Follow ubmission"
+
+        elif quest_type == "retweet":
+            review_title = f"Quest #{self.quest_id} Retweet Submission"
+
+        else:
+            review_title = f"Quest #{self.quest_id} Submission"
+
         embed = discord.Embed(
-            title=f"Quest #{self.quest_id} Submission",
+            title=review_title,
             color=discord.Color.orange()
         )
+
 
         embed.set_thumbnail(
             url=interaction.user.display_avatar.url
@@ -1250,8 +1441,52 @@ class QuestView(ui.View):
                 )
                 return
 
+            cursor.execute("""
+            SELECT quest_type, proof_thread_id
+            FROM quests
+            WHERE quest_id = ?
+            """, (self.quest_id,))
+
+            quest_data = cursor.fetchone()
+
+            quest_type = quest_data[0]
+            proof_thread_id = quest_data[1]
+
+            # =========================
+            # FOLLOW QUEST
+            # =========================
+
+            if quest_type in ["follow", "retweet"]:
+
+                thread = interaction.guild.get_thread(
+                    proof_thread_id
+                )
+
+                if not thread:
+                    await interaction.response.send_message(
+                        "Proof thread not found.",
+                        ephemeral=True
+                    )
+
+                    return
+
+                await interaction.response.send_message(
+                    f"📸 Upload your screenshot proof here:\n"
+                    f"{thread.jump_url}",
+                    ephemeral=True
+                )
+
+                return
+
+            # =========================
+            # NORMAL QUESTS
+            # =========================
+
             await interaction.response.send_modal(
-                SubmitQuestModal(self.quest_id)
+                SubmitQuestModal(
+                    self.quest_id,
+                    self.tweet_link
+                )
             )
 
         submit_button.callback = submit_callback
@@ -1332,11 +1567,25 @@ class ApprovalView(ui.View):
             # =========================
 
             cursor.execute("""
+            SELECT reward_points
+            FROM quests
+            WHERE quest_id = ?
+            """, (self.quest_id,))
+
+            quest_data = cursor.fetchone()
+
+            reward_points = (
+                quest_data[0]
+                if quest_data
+                else 1
+            )
+
+            cursor.execute("""
             UPDATE users
-            SET gold_points = gold_points + 1,
+            SET gold_points = gold_points + ?,
                 quests_completed = quests_completed + 1
             WHERE user_id = ?
-            """, (self.user_id,))
+            """, (reward_points, self.user_id,))
 
             conn.commit()
 
@@ -1383,7 +1632,7 @@ class ApprovalView(ui.View):
             await logs_channel.send(
                 f"{user.mention} completed "
                 f"**Quest #{self.quest_id} - {quest_title}** "
-                f"and earned :moneybag:  1 **Gold Points**\n\n"
+                f"and earned :moneybag:  {reward_points} **Gold Points**\n\n"
                 f"Approved by: {interaction.user.mention}\n"
                 f"Total Gold Points: :moneybag: {gold_points}"
             )
@@ -1880,14 +2129,31 @@ async def paid_quest(
         quest_type: app_commands.Choice[str]
 ):
 
+    # =========================
+    # PAID QUEST CHANNEL
+    # =========================
+
+    if interaction.channel.id != PAID_QUEST_CHANNEL:
+
+        paid_quest_channel = get_channel(
+            interaction.guild,
+            PAID_QUEST_CHANNEL
+        )
+
         await interaction.response.send_message(
-            f"You can only use this command in {paid_quest_channel.mention}",
+            f"You can only use this command in "
+            f"{paid_quest_channel.mention}",
             ephemeral=True
         )
 
         return
 
-        if not has_admin_role(interaction.user):
+    # =========================
+    # ADMIN CHECK
+    # =========================
+
+    if not has_admin_role(interaction.user):
+
         await interaction.response.send_message(
             "No permission.",
             ephemeral=True
@@ -1895,16 +2161,16 @@ async def paid_quest(
 
         return
 
+    # =========================
+    # QUEST MODAL
+    # =========================
+
     class QuestModal(ui.Modal):
 
         def __init__(self, quest_type):
             super().__init__(title="Create Quest")
 
             self.quest_type = quest_type
-
-            # =========================
-            # QUEST TITLE
-            # =========================
 
             self.quest_title = ui.TextInput(
                 label="Quest Title",
@@ -1915,9 +2181,16 @@ async def paid_quest(
 
             self.add_item(self.quest_title)
 
-            # =========================
-            # TWEET LINK
-            # =========================
+            if self.quest_type == "tweet":
+                self.instructions = ui.TextInput(
+                    label="Tweet Instructions",
+                    placeholder="Tell users what they should tweet",
+                    required=True,
+                    style=discord.TextStyle.paragraph,
+                    max_length=1000
+                )
+
+                self.add_item(self.instructions)
 
             self.tweet_link = ui.TextInput(
                 label="Tweet Link",
@@ -1931,10 +2204,9 @@ async def paid_quest(
                 self,
                 modal_interaction: discord.Interaction
         ):
-            created_at = datetime.now(UTC)
-            expires_at = created_at + timedelta(hours=24)
 
             QUEST_TYPES = {
+
                 "like_reply": {
                     "points": 1,
                     "task": (
@@ -1942,20 +2214,25 @@ async def paid_quest(
                         "and Submit your Reply Link"
                     )
                 },
+
                 "follow": {
                     "points": 2,
                     "task": (
                         "Follow the Account and "
-                        "Submit Screenshot Proof"
-                    )
+                        "Upload Screenshot Proof in Thread"
+                    ),
+                    "requires_image": True
                 },
+
                 "retweet": {
                     "points": 5,
                     "task": (
                         "Retweet the Post and "
-                        "Submit Retweet Link"
-                    )
+                         "Upload Screenshot Proof in Thread"
+                    ),
+                    "requires_image": True
                 },
+
                 "quote_retweet": {
                     "points": 40,
                     "task": (
@@ -1963,6 +2240,7 @@ async def paid_quest(
                         "Submit Quote Tweet Link"
                     )
                 },
+
                 "tweet": {
                     "points": 80,
                     "task": (
@@ -1978,19 +2256,33 @@ async def paid_quest(
 
             task_text = quest_data["task"]
 
+            instructions_text = None
+
+            if self.quest_type == "tweet":
+                instructions_text = str(self.instructions)
+
+            created_at = datetime.now(UTC)
+
+            expires_at = created_at + timedelta(hours=24)
 
             cursor.execute("""
             INSERT INTO quests (
                 title,
                 tweet_link,
+                reward_points,
+                quest_type,
+                instructions,
                 created_by,
                 created_at,
                 expires_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 str(self.quest_title),
                 str(self.tweet_link),
+                reward_points,
+                self.quest_type,
+                instructions_text,
                 modal_interaction.user.id,
                 created_at.isoformat(),
                 expires_at.isoformat()
@@ -1999,6 +2291,7 @@ async def paid_quest(
             conn.commit()
 
             quest_id = cursor.lastrowid
+            proof_thread_id = None
 
             embed = discord.Embed(
                 title=(
@@ -2029,6 +2322,13 @@ async def paid_quest(
                 inline=False
             )
 
+            if self.quest_type == "tweet" and str(self.instructions).strip():
+                embed.add_field(
+                    name="Instructions",
+                    value=str(self.instructions),
+                    inline=False
+                )
+
             embed.set_thumbnail(
                 url=modal_interaction.user.display_avatar.url
             )
@@ -2041,12 +2341,33 @@ async def paid_quest(
                 )
             )
 
+            proof_thread_id = None
+
+            # =========================
+            # CREATE PROOF THREAD
+            # =========================
+
+            if self.quest_type in ["follow", "retweet"]:
+                thread = await msg.create_thread(
+                    name=f"proof-submissions-quest-{quest_id}",
+                    auto_archive_duration=1440
+                )
+
+                proof_thread_id = thread.id
+
+                await thread.send(
+                    "📸 Upload your screenshot proof below.\n"
+                    "Only ONE submission allowed per member."
+                )
+
             cursor.execute("""
             UPDATE quests
-            SET message_id = ?
+            SET message_id = ?,
+                proof_thread_id = ?
             WHERE quest_id = ?
             """, (
                 msg.id,
+                proof_thread_id,
                 quest_id
             ))
 
@@ -2064,7 +2385,13 @@ async def paid_quest(
                 ephemeral=True
             )
 
-    await interaction.response.send_modal(QuestModal(quest_type.value))
+    # =========================
+    # OPEN MODAL
+    # =========================
+
+    await interaction.response.send_modal(
+        QuestModal(quest_type.value)
+    )
 
 # =========================
 # UPDATE QUEST STATUS
