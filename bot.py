@@ -26,6 +26,7 @@ QUEST_CHANNEL = 1507640059560595536
 REPORT_CHANNEL = 1507640061787639901
 LOGS_CHANNEL = 1507640063666946221
 STATS_CHANNEL = 1507640065826754630
+LEADERBOARD_CHANNEL = 1508476505900978346
 
 VIP_CATEGORY_NAME = 1507640088413339802
 PAID_QUEST_CHANNEL = 1507640090418086019
@@ -1430,12 +1431,14 @@ class CommunityQuestView(ui.View):
             return
 
         # =========================
-        # GIVE 1 POINT
+        # GIVE REWARDS
         # =========================
 
         cursor.execute("""
         UPDATE users
-        SET points = COALESCE(points, 0) + 1
+        SET
+            points = COALESCE(points, 0) + 1,
+            engagements = COALESCE(engagements, 0) + 1
         WHERE user_id = ?
         """, (interaction.user.id,))
 
@@ -1500,6 +1503,7 @@ class MyBot(commands.Bot):
     async def setup_hook(self):
 
         await load_persistent_views()
+        await self.tree.sync()
 
 bot = MyBot(command_prefix="!",intents=intents)
 
@@ -2265,7 +2269,7 @@ async def profile(
         return
 
     cursor.execute("""
-    SELECT x_username, points, gold_points, quests_completed, quests_denied
+    SELECT x_username, points, gold_points, quests_completed, quests_denied, engagements, quests_created
     FROM users
     WHERE user_id = ?
     """, (member.id,))
@@ -2298,7 +2302,7 @@ async def profile(
 
         return
 
-    x_username, points, gold_points, completed, denied = data
+    x_username, points, gold_points, completed, denied, engagements, quests_created = data
 
     rank = get_user_rank(member.id)
 
@@ -2333,6 +2337,18 @@ async def profile(
         name="Denied Tasks",
         value=str(denied),
         inline=False
+    )
+
+    embed.add_field(
+        name="Engagements",
+        value=str(engagements),
+        inline=True
+    )
+
+    embed.add_field(
+        name="Quests Created",
+        value=str(quests_created),
+        inline=True
     )
 
     embed.add_field(
@@ -2538,11 +2554,12 @@ async def leaderboard(interaction: discord.Interaction):
     # =========================
 
     cursor.execute("""
-    SELECT user_id, x_username, points, gold_points, quests_completed, quests_denied
+    SELECT user_id, x_username, points, gold_points, quests_completed, quests_denied, engagements
     FROM users
     ORDER BY gold_points DESC,
-             points DESC,
              quests_completed DESC,
+             engagements DESC,
+             points DESC,
              quests_denied ASC
     """)
     users = cursor.fetchall()
@@ -2563,7 +2580,7 @@ async def leaderboard(interaction: discord.Interaction):
 
     pages = []
 
-    chunk_size = 10
+    chunk_size = 5
 
     for i in range(0, len(users), chunk_size):
 
@@ -2577,7 +2594,8 @@ async def leaderboard(interaction: discord.Interaction):
                 points,
                 gold_points,
                 completed,
-                denied
+                denied,
+                engagements
         ) in enumerate(chunk, start=i + 1):
 
             member = interaction.guild.get_member(
@@ -2605,12 +2623,6 @@ async def leaderboard(interaction: discord.Interaction):
             embed.add_field(
                 name="Gold Points",
                 value=f":moneybag: {gold_points}",
-                inline=False
-            )
-
-            embed.add_field(
-                name="Creator Points",
-                value=f":gem: {points}",
                 inline=False
             )
 
@@ -2657,6 +2669,257 @@ async def leaderboard(interaction: discord.Interaction):
         view=view
     )
 
+class EngagementLeaderboardView(ui.View):
+
+    def __init__(self, embeds, user_id):
+        super().__init__(timeout=180)
+
+        self.embeds = embeds
+        self.user_id = user_id
+        self.page = 0
+
+        self.update_buttons()
+
+    # =========================
+    # ONLY COMMAND USER CAN USE
+    # =========================
+
+    async def interaction_check(
+            self,
+            interaction: discord.Interaction
+    ):
+
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message(
+                "You cannot control this leaderboard.",
+                ephemeral=True
+            )
+
+            return False
+
+        return True
+
+    # =========================
+    # UPDATE BUTTON STATES
+    # =========================
+
+    def update_buttons(self):
+
+        self.previous_button.disabled = self.page == 0
+
+        self.next_button.disabled = (
+                self.page >= len(self.embeds) - 1
+        )
+
+        self.page_indicator.label = (
+            f"Page {self.page + 1}/{len(self.embeds)}"
+        )
+
+    # =========================
+    # PREVIOUS BUTTON
+    # =========================
+
+    @ui.button(
+        emoji="⏮️",
+        style=discord.ButtonStyle.secondary,
+        row=0
+    )
+    async def previous_button(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        if self.page > 0:
+            self.page -= 1
+
+        self.update_buttons()
+
+        await interaction.response.edit_message(
+            embeds=self.embeds[self.page],
+            view=self
+        )
+
+    # =========================
+    # PAGE INDICATOR
+    # =========================
+
+    @ui.button(
+        label="Page 1/1",
+        style=discord.ButtonStyle.blurple,
+        disabled=True,
+        row=0
+    )
+    async def page_indicator(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+        pass
+
+    # =========================
+    # NEXT BUTTON
+    # =========================
+
+    @ui.button(
+        emoji="⏭️",
+        style=discord.ButtonStyle.secondary,
+        row=0
+    )
+    async def next_button(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        if self.page < len(self.embeds) - 1:
+            self.page += 1
+
+        self.update_buttons()
+
+        await interaction.response.edit_message(
+            embeds=self.embeds[self.page],
+            view=self
+        )
+
+
+@bot.tree.command(name="engagement_leaderboard")
+async def engagement_leaderboard(interaction: discord.Interaction):
+    if interaction.channel.id != LEADERBOARD_CHANNEL:
+        engagement_leaderboard_channel = get_channel(
+            interaction.guild,
+            LEADERBOARD_CHANNEL
+        )
+
+        channel_mention = (
+            engagement_leaderboard_channel.mention
+            if engagement_leaderboard_channel
+            else f"#{LEADERBOARD_CHANNEL}"
+        )
+
+        await interaction.response.send_message(
+            f"You can only use this command in "
+            f"{channel_mention}",
+            ephemeral=True
+        )
+
+        return
+
+    # =========================
+    # GET USERS
+    # =========================
+
+    cursor.execute("""
+    SELECT user_id, x_username, points, engagements, quests_created
+    FROM users
+    ORDER BY engagements DESC,
+             quests_created DESC,
+             points DESC
+    """)
+    users = cursor.fetchall()
+
+    print(users)
+
+    if not users:
+        await interaction.response.send_message(
+            "Leaderboard is empty.",
+            ephemeral=True
+        )
+
+        return
+
+    # =========================
+    # CREATE EMBED PAGES
+    # =========================
+
+    pages = []
+
+    chunk_size = 10
+
+    for i in range(0, len(users), chunk_size):
+
+        chunk = users[i:i + chunk_size]
+
+        embeds = []
+
+        for rank, (
+                user_id,
+                x_username,
+                points,
+                engagements,
+                quests_created
+        ) in enumerate(chunk, start=i + 1):
+
+            member = interaction.guild.get_member(
+                user_id
+            )
+
+            if not member:
+                continue
+
+            embed = discord.Embed(
+                title=f"🏆 Rank #{rank}",
+                color=discord.Color.gold()
+            )
+
+            embed.set_thumbnail(
+                url=member.display_avatar.url
+            )
+
+            embed.add_field(
+                name="",
+                value=member.mention,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Total Engagement",
+                value=str(engagements),
+                inline=False
+            )
+
+            embed.add_field(
+                name="Created Quests",
+                value=str(quests_created),
+                inline=False
+            )
+
+            embed.add_field(
+                name="Creator Points",
+                value=f":moneybag: {points}",
+                inline=False
+            )
+
+            embed.add_field(
+                name="X Profile",
+                value=f"https://x.com/{x_username}",
+                inline=False
+            )
+
+            embed.set_footer(
+                text=(
+                    f"Leaderboard • "
+                    f"Showing {rank}/{len(users)}"
+                )
+            )
+
+            embeds.append(embed)
+
+        pages.append(embeds)
+
+    # =========================
+    # SEND FIRST PAGE
+    # =========================
+
+    view = EngagementLeaderboardView(
+        pages,
+        interaction.user.id
+    )
+
+    await interaction.response.send_message(
+        embeds=pages[0],
+        view=view
+    )
 
 @bot.event
 async def on_member_join(member):
@@ -2966,14 +3229,14 @@ async def create_quest(interaction: discord.Interaction):
                 ):
                     # =========================
                     # REMOVE 20 POINTS
+                    # ADD CREATED QUEST COUNT
                     # =========================
-
-                    guild = interaction.guild
-                    quest_channel = guild.get_channel(QUEST_CHANNEL)
 
                     cursor.execute("""
                     UPDATE users
-                    SET points = points - 20
+                    SET
+                        points = COALESCE(points, 0) - 20,
+                        quests_created = COALESCE(quests_created, 0) + 1
                     WHERE user_id = ?
                     """, (
                         self.modal_interaction.user.id,
@@ -3081,9 +3344,9 @@ async def create_quest(interaction: discord.Interaction):
                     # SEND TO QUEST CHANNEL
                     # =========================
 
-                    quest_channel = guild.get_channel(QUEST_CHANNEL)
-
                     guild = confirm_interaction.guild
+
+                    quest_channel = guild.get_channel(QUEST_CHANNEL)
 
                     msg = await quest_channel.send(
                         embed=embed,
@@ -3905,22 +4168,115 @@ class ReportReviewView(ui.View):
 
             await member.add_roles(first_role)
 
+            # =========================
+            # DEDUCT 2 POINTS
+            # =========================
+
+            cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points, 0) - 2
+            WHERE user_id = ?
+            """, (member.id,))
+
+            conn.commit()
+
+            # =========================
+            # LOG PENALTY
+            # =========================
+
+            logs_channel = guild.get_channel(LOGS_CHANNEL)
+
+            if logs_channel:
+                cursor.execute("""
+                SELECT points
+                FROM users
+                WHERE user_id = ?
+                """, (member.id,))
+
+                updated_points = cursor.fetchone()
+
+                total_points = (
+                    updated_points[0]
+                    if updated_points
+                    else 0
+                )
+
+                await logs_channel.send(
+                    f"⚠️ {member.mention} received a "
+                    f"**First Offense** penalty.\n\n"
+                    f"📉 Deducted: -2 Creator Points\n"
+                    f"👮 Reviewed By: {admin.mention}\n"
+                    f"💎 Total Creator Points: {total_points}"
+                )
+
             status = "First Offense"
             remaining = 2
+            deduction = 2
 
         elif second_role not in member.roles:
 
             await member.add_roles(second_role)
 
+            # =========================
+            # DEDUCT 2 POINTS
+            # =========================
+
+            cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points, 0) - 2
+            WHERE user_id = ?
+            """, (member.id,))
+
+            conn.commit()
+
+            # =========================
+            # LOG PENALTY
+            # =========================
+
+            logs_channel = guild.get_channel(LOGS_CHANNEL)
+
+            if logs_channel:
+                cursor.execute("""
+                SELECT points
+                FROM users
+                WHERE user_id = ?
+                """, (member.id,))
+
+                updated_points = cursor.fetchone()
+
+                total_points = (
+                    updated_points[0]
+                    if updated_points
+                    else 0
+                )
+
+                await logs_channel.send(
+                    f"⚠️ {member.mention} received a "
+                    f"**Second Offense** penalty.\n\n"
+                    f"📉 Deducted: -2 Creator Points\n"
+                    f"👮 Reviewed By: {admin.mention}\n"
+                    f"💎 Total Creator Points: {total_points}"
+                )
+
             status = "Second Offense"
             remaining = 1
+            deduction = 2
 
         else:
 
             await member.ban(reason="3rd offense reached")
 
+            await logs_channel.send(
+                f"🔨 {member.mention} was permanently banned.\n\n"
+                f"👮 Reviewed By: {admin.mention}\n"
+                f"⚠️ Reason: 3rd offense reached"
+            )
+
             status = "BANNED"
             remaining = 0
+            deduction = "Banned"
 
         # =========================
         # DELETE ADMIN REVIEW
@@ -3967,6 +4323,15 @@ class ReportReviewView(ui.View):
                     inline=False
                 )
 
+                embed.add_field(
+                    name="📉 Point Deduction",
+                    value=(
+                        f"-{deduction} Creator Points"
+                        if deduction != "Banned"
+                        else "Permanent Ban"
+                    ),
+                    inline=False
+                )
                 embed.add_field(
                     name="📌 Remaining Before Ban",
                     value=str(remaining),
@@ -4247,7 +4612,35 @@ async def on_message(message):
         warning = await message.channel.send(
             f"{message.author.mention} "
             f"You can only use `/leaderboard` "
-            f"or `/profile` in this channel."
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await warning.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # ENGAGEMENT LEADERBOARD CHANNEL
+    # =========================
+
+    if message.channel.id == LEADERBOARD_CHANNEL:
+
+        allowed = [
+            "/engagement_leaderboard",
+        ]
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warning = await message.channel.send(
+            f"{message.author.mention} "
+            f"You can only use `/engagement_leaderboard` "
         )
 
         await asyncio.sleep(3)
@@ -4471,3 +4864,4 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
+
