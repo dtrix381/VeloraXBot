@@ -2886,7 +2886,7 @@ async def engagement_leaderboard(interaction: discord.Interaction):
 
             embed.add_field(
                 name="Creator Points",
-                value=f":moneybag: {points}",
+                value=f":gem: {points}",
                 inline=False
             )
 
@@ -4225,7 +4225,7 @@ class ReportReviewView(ui.View):
             cursor.execute("""
             UPDATE users
             SET
-                points = COALESCE(points, 0) - 2
+                points = COALESCE(points, 0) - 5
             WHERE user_id = ?
             """, (member.id,))
 
@@ -4255,7 +4255,7 @@ class ReportReviewView(ui.View):
                 await logs_channel.send(
                     f"⚠️ {member.mention} received a "
                     f"**Second Offense** penalty.\n\n"
-                    f"📉 Deducted: -2 Creator Points\n"
+                    f"📉 Deducted: -5 Creator Points\n"
                     f"👮 Reviewed By: {admin.mention}\n"
                     f"💎 Total Creator Points: {total_points}"
                 )
