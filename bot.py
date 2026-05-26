@@ -4629,14 +4629,27 @@ async def create_quest(interaction: discord.Interaction):
                 f"{registered_username.lower()}/status"
             )
 
-            if not submitted_link.startswith(expected):
-                await modal_interaction.response.send_message(
-                    f"❌ You must use your own X post.\n\n"
-                    f"Expected:\n{expected}",
-                    ephemeral=True
-                )
+            admin_role = interaction.guild.get_role(
+                ADMIN_ROLE_ID
+            )
 
-                return
+            is_admin = admin_role in modal_interaction.user.roles
+
+            # =========================
+            # NORMAL USERS
+            # MUST USE THEIR OWN X
+            # =========================
+
+            if not is_admin:
+
+                if not submitted_link.startswith(expected):
+                    await modal_interaction.response.send_message(
+                        f"❌ You must use your own X post.\n\n"
+                        f"Expected:\n{expected}",
+                        ephemeral=True
+                    )
+
+                    return
 
             # =========================
             # CONFIRM VIEW
