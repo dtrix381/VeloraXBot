@@ -22,6 +22,7 @@ SECOND_OFFENSE_ROLE = 1507613855587766302
 CATEGORY_NAME = 1507640053315407904
 REGISTER_CHANNEL = 1507640055680733244
 INVITE_CHANNEL = 1507640057287409786
+AVAILABLE_QUEST_CHANNEL = 1508623094606991440
 QUEST_CHANNEL = 1507640059560595536
 REPORT_CHANNEL = 1507640061787639901
 LOGS_CHANNEL = 1507640063666946221
@@ -30,6 +31,7 @@ LEADERBOARD_CHANNEL = 1508476505900978346
 
 VIP_CATEGORY_NAME = 1507640088413339802
 PAID_QUEST_CHANNEL = 1507640090418086019
+SUBMISSION_QUEUE_CHANNEL = 1508629156215132347
 VIP_APPROVAL_CHANNEL = 1507640092494266418
 GOLD_LOGS_CHANNEL = 1507640096290242612
 GOLD_LEADERBOARD_CHANNEL = 1507640098521481236
@@ -38,6 +40,12 @@ APPROVAL_CHANNEL = 1507640094951997460
 
 EXCHANGE_GOLD_COST = 100
 EXCHANGE_REWARD = "$10"
+EXCHANGE_OPTIONS = {
+    100: "$10",
+    200: "$20",
+    300: "$30",
+    500: "$50"
+}
 
 invite_cache = {}
 
@@ -397,6 +405,8 @@ class XModal(ui.Modal, title="Connect Your X"):
 
     async def on_submit(self, interaction: discord.Interaction):
 
+        await interaction.response.defer(ephemeral=True)
+
         guild = interaction.guild
         original_username = str(self.username).replace("@", "").strip()
 
@@ -501,6 +511,8 @@ class XModal(ui.Modal, title="Connect Your X"):
         quest_channel = guild.get_channel(QUEST_CHANNEL)
         quest_channel_mention = quest_channel.mention if quest_channel else "#ǫᴜᴇsᴛ"
 
+        log_text = None
+
         # Build dynamic response message based on reward eligibility
         if is_new_user:
             success_message = (
@@ -577,12 +589,12 @@ class XModal(ui.Modal, title="Connect Your X"):
 
                 await approval_channel.send(embed=embed, view=view)
 
-        await interaction.response.send_message(success_message, ephemeral=True)
+        await interaction.followup.send(success_message, ephemeral=True)
 
         # Dynamic lookup for your stylized log channel name
         try:
             log_channel = guild.get_channel(LOGS_CHANNEL)
-            if log_channel:
+            if log_channel and log_text:
                 await log_channel.send(log_text)
         except Exception as e:
             print(f"Failed to send log message: {e}")
@@ -787,12 +799,14 @@ class SubmitQuestModal(ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
 
+        await interaction.response.defer(ephemeral=True)
+
         # =========================
         # CHECK QUEST EXPIRATION
         # =========================
 
         cursor.execute("""
-        SELECT expires_at
+        SELECT current_claims, max_claims, completed
         FROM quests
         WHERE quest_id = ?
         """, (self.quest_id,))
@@ -800,17 +814,19 @@ class SubmitQuestModal(ui.Modal):
         quest_data = cursor.fetchone()
 
         if not quest_data:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Quest not found.",
                 ephemeral=True
             )
             return
 
-        expires_at = datetime.fromisoformat(quest_data[0])
+        current_claims = quest_data[0]
+        max_claims = quest_data[1]
+        completed = quest_data[2]
 
-        if datetime.now(UTC) > expires_at:
-            await interaction.response.send_message(
-                "❌ This quest has expired.",
+        if completed or current_claims >= max_claims:
+            await interaction.followup.send(
+                "❌ This quest is already full.",
                 ephemeral=True
             )
             return
@@ -828,7 +844,7 @@ class SubmitQuestModal(ui.Modal):
         row = cursor.fetchone()
 
         if not row or not row[0]:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You must connect your X account first.",
                 ephemeral=True
             )
@@ -853,7 +869,7 @@ class SubmitQuestModal(ui.Modal):
         approved = cursor.fetchone()
 
         if approved:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "You already completed this quest.",
                 ephemeral=True
             )
@@ -876,7 +892,7 @@ class SubmitQuestModal(ui.Modal):
         pending = cursor.fetchone()
 
         if pending:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Your submission is still pending.",
                 ephemeral=True
             )
@@ -888,10 +904,10 @@ class SubmitQuestModal(ui.Modal):
 
         submitted_link = str(self.reply_link).strip().lower()
 
-        expected_link = f"https://x.com/{registered_username}"
+        expected_link = f"https://x.com/{registered_username}/status"
 
         if not submitted_link.startswith(expected_link):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"❌ Invalid reply link.\n\n"
                 f"You must submit your own X reply:\n{expected_link}",
                 ephemeral=True
@@ -974,7 +990,102 @@ class SubmitQuestModal(ui.Modal):
 
         conn.commit()
 
-        await interaction.response.send_message(
+        # =========================
+        # GET QUEST INFO
+        # =========================
+
+        cursor.execute("""
+        SELECT
+            title,
+            current_claims,
+            max_claims,
+            message_id
+        FROM quests
+        WHERE quest_id = ?
+        """, (self.quest_id,))
+
+        quest_info = cursor.fetchone()
+
+        quest_title = quest_info[0]
+        current_claims = quest_info[1]
+        max_claims = quest_info[2]
+        quest_message_id = quest_info[3]
+
+        # =========================
+        # SUBMISSION QUEUE LOG
+        # =========================
+
+        queue_channel = interaction.guild.get_channel(
+            SUBMISSION_QUEUE_CHANNEL
+        )
+
+        queue_embed = discord.Embed(
+            title="🕒 Paid Quest Submission Queue",
+            color=discord.Color.orange()
+        )
+
+        queue_embed.add_field(
+            name="Quest",
+            value=(
+                f"**Quest #{self.quest_id} - {quest_title}**\n"
+                f"[Jump to Quest]"
+                f"(https://discord.com/channels/"
+                f"{interaction.guild.id}/"
+                f"{PAID_QUEST_CHANNEL}/"
+                f"{quest_message_id})"
+            ),
+            inline=False
+        )
+
+        queue_embed.add_field(
+            name="Member",
+            value=interaction.user.mention,
+            inline=False
+        )
+
+        queue_embed.add_field(
+            name="Slots",
+            value=f"{current_claims}/{max_claims}",
+            inline=False
+        )
+
+        queue_embed.add_field(
+            name="Submission",
+            value=f"[View Submission]({approval_message.jump_url})",
+            inline=False
+        )
+
+        queue_embed.add_field(
+            name="Status",
+            value="🟡 Under Review",
+            inline=False
+        )
+
+        queue_embed.set_thumbnail(
+            url=interaction.user.display_avatar.url
+        )
+
+        queue_log_message = await queue_channel.send(
+            embed=queue_embed
+        )
+
+        # SAVE APPROVAL MESSAGE ID
+
+        cursor.execute("""
+        UPDATE submissions
+        SET
+            approval_message_id = ?,
+            queue_message_id = ?
+        WHERE id = ?
+        """, (
+            approval_message.id,
+            queue_log_message.id,
+            submission_id
+        ))
+
+        conn.commit()
+
+        await interaction.followup.send(
             "Quest submitted successfully.",
             ephemeral=True
         )
@@ -1034,21 +1145,14 @@ class SubmitQuestButton(ui.Button):
             )
             return
 
-        expires_at = datetime.fromisoformat(quest[0])
+        expires_at = quest[0]
+
+        if isinstance(expires_at, str):
+            expires_at = datetime.fromisoformat(expires_at)
+
         quest_type = quest[1]
         proof_thread_id = quest[2]
         tweet_link = quest[3]
-
-        # =========================
-        # EXPIRED
-        # =========================
-
-        if datetime.now(UTC) > expires_at:
-            await interaction.response.send_message(
-                "❌ This quest has expired.",
-                ephemeral=True
-            )
-            return
 
         # =========================
         # FOLLOW / RETWEET
@@ -1140,6 +1244,135 @@ class ApprovalView(ui.View):
                 return
 
             # =========================
+            # CHECK IF QUEST IS FILLED
+            # =========================
+
+            cursor.execute("""
+            SELECT current_claims, max_claims
+            FROM quests
+            WHERE quest_id = ?
+            """, (self.quest_id,))
+
+            quest_limits = cursor.fetchone()
+
+            current_claims = quest_limits[0]
+            max_claims = quest_limits[1]
+
+            if current_claims >= max_claims:
+
+                # UPDATE SUBMISSION STATUS
+                cursor.execute("""
+                UPDATE submissions
+                SET status = 'filled'
+                WHERE id = ?
+                """, (self.submission_id,))
+
+                conn.commit()
+
+                # DISABLED VIEW
+                filled_view = ui.View(timeout=None)
+
+                # APPROVE DISABLED
+
+                filled_view.add_item(
+                    ui.Button(
+                        label="ᴀᴘᴘʀᴏᴠᴇ",
+                        style=discord.ButtonStyle.green,
+                        disabled=True
+                    )
+                )
+
+                # DENY DISABLED
+
+                filled_view.add_item(
+                    ui.Button(
+                        label="ᴅᴇɴʏ",
+                        style=discord.ButtonStyle.red,
+                        disabled=True
+                    )
+                )
+
+                # FILLED ENABLED
+
+                quest_filled_button = ui.Button(
+                    label="Qᴜᴇsᴛ Fɪʟʟᴇᴅ",
+                    style=discord.ButtonStyle.secondary,
+                    disabled=False
+                )
+
+                quest_filled_button.callback = filled_callback
+
+                filled_view.add_item(quest_filled_button)
+
+                await interaction.message.edit(
+                    view=filled_view
+                )
+
+                # UPDATE QUEUE EMBED
+                cursor.execute("""
+                SELECT queue_message_id
+                FROM submissions
+                WHERE id = ?
+                """, (self.submission_id,))
+
+                queue_data = cursor.fetchone()
+
+                if queue_data and queue_data[0]:
+
+                    queue_channel = interaction.guild.get_channel(
+                        SUBMISSION_QUEUE_CHANNEL
+                    )
+
+                    try:
+
+                        queue_message = await queue_channel.fetch_message(
+                            queue_data[0]
+                        )
+
+                        filled_embed = discord.Embed(
+                            title="⚠️ Quest Filled",
+                            color=discord.Color.orange()
+                        )
+
+                        filled_embed.add_field(
+                            name="Quest",
+                            value=f"**Quest #{self.quest_id}**",
+                            inline=False
+                        )
+
+                        filled_embed.add_field(
+                            name="Member",
+                            value=f"<@{self.user_id}>",
+                            inline=False
+                        )
+
+                        filled_embed.add_field(
+                            name="Status",
+                            value="Quest already filled before review.",
+                            inline=False
+                        )
+
+                        filled_embed.add_field(
+                            name="Processed By",
+                            value=interaction.user.mention,
+                            inline=False
+                        )
+
+                        await queue_message.edit(
+                            embed=filled_embed
+                        )
+
+                    except Exception as e:
+                        print(f"Filled embed update error: {e}")
+
+                await interaction.response.send_message(
+                    "Quest already filled.",
+                    ephemeral=True
+                )
+
+                return
+
+            # =========================
             # UPDATE STATUS
             # =========================
 
@@ -1153,6 +1386,16 @@ class ApprovalView(ui.View):
                 datetime.now(UTC).isoformat(),
                 self.submission_id
             ))
+
+            # =========================
+            # INCREASE CLAIM COUNT
+            # =========================
+
+            cursor.execute("""
+            UPDATE quests
+            SET current_claims = current_claims + 1
+            WHERE quest_id = ?
+            """, (self.quest_id,))
 
             # =========================
             # ADD POINT + QUEST COUNT
@@ -1180,6 +1423,478 @@ class ApprovalView(ui.View):
             """, (reward_points, self.user_id,))
 
             conn.commit()
+
+            cursor.execute("""
+            SELECT
+                title,
+                current_claims,
+                max_claims
+            FROM quests
+            WHERE quest_id = ?
+            """, (self.quest_id,))
+
+            quest_info = cursor.fetchone()
+
+            quest_title = quest_info[0]
+            updated_claims = quest_info[1]
+            updated_max = quest_info[2]
+
+            # =========================
+            # UPDATE MAIN QUEST EMBED
+            # =========================
+
+            cursor.execute("""
+            SELECT
+                message_id,
+                ping_message_id,
+                tweet_link,
+                reward_points
+            FROM quests
+            WHERE quest_id = ?
+            """, (self.quest_id,))
+
+            quest_main_data = cursor.fetchone()
+
+            message_id = quest_main_data[0]
+            ping_message_id = quest_main_data[1]
+            tweet_link = quest_main_data[2]
+            reward_points = quest_main_data[3]
+
+            try:
+
+                quest_channel = interaction.guild.get_channel(
+                    PAID_QUEST_CHANNEL
+                )
+
+                quest_message = await quest_channel.fetch_message(
+                    message_id
+                )
+
+                # QUEST COMPLETED
+
+                if updated_claims >= updated_max:
+
+                    # =========================
+                    # DISABLE OTHER APPROVALS
+                    # =========================
+
+                    cursor.execute("""
+                    SELECT approval_message_id
+                    FROM submissions
+                    WHERE quest_id = ?
+                    AND status = 'pending'
+                    """, (self.quest_id,))
+
+                    pending_messages = cursor.fetchall()
+
+                    approval_channel = interaction.guild.get_channel(
+                        VIP_APPROVAL_CHANNEL
+                    )
+
+                    for msg in pending_messages:
+
+                        try:
+
+                            approval_message = await approval_channel.fetch_message(
+                                msg[0]
+                            )
+
+                            filled_view = ui.View(timeout=None)
+
+                            # APPROVE DISABLED
+
+                            filled_view.add_item(
+                                ui.Button(
+                                    label="ᴀᴘᴘʀᴏᴠᴇ",
+                                    style=discord.ButtonStyle.green,
+                                    disabled=True
+                                )
+                            )
+
+                            # DENY DISABLED
+
+                            filled_view.add_item(
+                                ui.Button(
+                                    label="ᴅᴇɴʏ",
+                                    style=discord.ButtonStyle.red,
+                                    disabled=True
+                                )
+                            )
+
+                            # FILLED ENABLED
+
+                            quest_filled_button = ui.Button(
+                                label="Qᴜᴇsᴛ Fɪʟʟᴇᴅ",
+                                style=discord.ButtonStyle.secondary
+                            )
+
+                            async def filled_only_callback(
+                                    interaction: discord.Interaction,
+                                    submission_message=approval_message,
+                                    submission_message_id=msg[0]
+                            ):
+
+                                # =========================
+                                # GET SUBMISSION DATA
+                                # =========================
+
+                                cursor.execute("""
+                                SELECT
+                                    submissions.id,
+                                    submissions.user_id,
+                                    submissions.queue_message_id,
+                                    quests.title
+                                FROM submissions
+                                JOIN quests
+                                ON submissions.quest_id = quests.quest_id
+                                WHERE approval_message_id = ?
+                                """, (submission_message_id,))
+
+                                filled_data = cursor.fetchone()
+
+                                if not filled_data:
+                                    await interaction.response.send_message(
+                                        "Submission not found.",
+                                        ephemeral=True
+                                    )
+                                    return
+
+                                filled_submission_id = filled_data[0]
+                                filled_user_id = filled_data[1]
+                                queue_message_id = filled_data[2]
+                                filled_quest_title = filled_data[3]
+
+                                # =========================
+                                # UPDATE STATUS
+                                # =========================
+
+                                cursor.execute("""
+                                UPDATE submissions
+                                SET status = 'filled'
+                                WHERE id = ?
+                                """, (filled_submission_id,))
+
+                                conn.commit()
+
+                                # =========================
+                                # UPDATE QUEUE EMBED
+                                # =========================
+
+                                if queue_message_id:
+
+                                    queue_channel = interaction.guild.get_channel(
+                                        SUBMISSION_QUEUE_CHANNEL
+                                    )
+
+                                    try:
+
+                                        queue_message = await queue_channel.fetch_message(
+                                            queue_message_id
+                                        )
+
+                                        filled_embed = discord.Embed(
+                                            title="⚠️ Quest Filled",
+                                            color=discord.Color.orange()
+                                        )
+
+                                        filled_embed.add_field(
+                                            name="Quest",
+                                            value=f"**Quest #{self.quest_id} - {filled_quest_title}**",
+                                            inline=False
+                                        )
+
+                                        filled_embed.add_field(
+                                            name="Member",
+                                            value=f"<@{filled_user_id}>",
+                                            inline=False
+                                        )
+
+                                        filled_embed.add_field(
+                                            name="Status",
+                                            value="Quest was already filled before approval.",
+                                            inline=False
+                                        )
+
+                                        filled_embed.add_field(
+                                            name="Processed By",
+                                            value=interaction.user.mention,
+                                            inline=False
+                                        )
+
+                                        member = interaction.guild.get_member(
+                                            filled_user_id
+                                        )
+
+                                        if member:
+                                            filled_embed.set_thumbnail(
+                                                url=member.display_avatar.url
+                                            )
+
+                                        filled_embed.set_footer(
+                                            text="Submission marked as filled."
+                                        )
+
+                                        await queue_message.edit(
+                                            embed=filled_embed
+                                        )
+
+                                    except Exception as e:
+
+                                        print(f"Filled queue update error: {e}")
+
+                                # =========================
+                                # DELETE APPROVAL MESSAGE
+                                # =========================
+
+                                await submission_message.delete()
+
+                                await interaction.response.send_message(
+                                    "Submission marked as quest filled.",
+                                    ephemeral=True
+                                )
+
+                            quest_filled_button.callback = filled_only_callback
+
+                            filled_view.add_item(quest_filled_button)
+
+                            await approval_message.edit(
+                                view=filled_view
+                            )
+
+                        except Exception as e:
+
+                            print(f"Pending approval update error: {e}")
+
+                    cursor.execute("""
+                    UPDATE quests
+                    SET completed = 1
+                    WHERE quest_id = ?
+                    """, (self.quest_id,))
+
+                    # =========================
+                    # LOCK PROOF THREAD
+                    # =========================
+
+                    cursor.execute("""
+                    SELECT proof_thread_id
+                    FROM quests
+                    WHERE quest_id = ?
+                    """, (self.quest_id,))
+
+                    thread_data = cursor.fetchone()
+
+                    if thread_data and thread_data[0]:
+
+                        try:
+
+                            proof_thread = interaction.guild.get_thread(
+                                thread_data[0]
+                            )
+
+                            if proof_thread:
+                                await proof_thread.edit(
+                                    locked=True,
+                                    archived=True
+                                )
+
+                        except Exception as e:
+
+                            print(f"Proof thread lock error: {e}")
+                    conn.commit()
+
+                    completed_embed = discord.Embed(
+                        title=f"Quest #{self.quest_id} - {quest_title}",
+                        color=discord.Color.dark_grey()
+                    )
+
+                    completed_embed.add_field(
+                        name="Status",
+                        value="✅ COMPLETED",
+                        inline=False
+                    )
+
+                    completed_embed.add_field(
+                        name="Claims",
+                        value=f"{updated_claims}/{updated_max}",
+                        inline=False
+                    )
+
+                    completed_embed.add_field(
+                        name="Reward",
+                        value=f":moneybag: {reward_points} Gold Points",
+                        inline=False
+                    )
+
+                    completed_embed.add_field(
+                        name="Raid Link",
+                        value=f"[Click Here to Raid]({tweet_link})",
+                        inline=False
+                    )
+
+                    completed_embed.set_footer(
+                        text="This quest has reached maximum claims."
+                    )
+
+                    disabled_view = ui.View(timeout=None)
+
+                    disabled_view.add_item(
+                        ui.Button(
+                            label="Raid Link",
+                            url=tweet_link,
+                            style=discord.ButtonStyle.link
+                        )
+                    )
+
+                    disabled_view.add_item(
+                        ui.Button(
+                            label="Quest Filled",
+                            style=discord.ButtonStyle.secondary,
+                            disabled=True
+                        )
+                    )
+
+                    await quest_message.edit(
+                        embed=completed_embed,
+                        view=disabled_view
+                    )
+
+                    # DELETE PING MESSAGE
+
+                    try:
+
+                        if ping_message_id:
+                            ping_message = await quest_channel.fetch_message(
+                                ping_message_id
+                            )
+
+                            await ping_message.delete()
+
+                    except:
+                        pass
+
+                # STILL AVAILABLE
+
+                else:
+
+                    updated_embed = discord.Embed(
+                        title=f"Quest #{self.quest_id} - {quest_title}",
+                        color=0x2ECC71
+                    )
+
+                    updated_embed.add_field(
+                        name="Available Claims",
+                        value=f"{updated_claims}/{updated_max}",
+                        inline=False
+                    )
+
+                    updated_embed.add_field(
+                        name="Reward",
+                        value=f":moneybag: {reward_points} Gold Points",
+                        inline=False
+                    )
+
+                    updated_embed.add_field(
+                        name="Raid Link",
+                        value=f"[Click Here to Raid]({tweet_link})",
+                        inline=False
+                    )
+
+                    await quest_message.edit(
+                        embed=updated_embed,
+                        view=QuestView(
+                            self.quest_id,
+                            tweet_link
+                        )
+                    )
+
+            except Exception as e:
+
+                print(f"Quest embed update error: {e}")
+
+            cursor.execute("""
+            SELECT queue_message_id
+            FROM submissions
+            WHERE id = ?
+            """, (self.submission_id,))
+
+            queue_data = cursor.fetchone()
+
+            if queue_data and queue_data[0]:
+
+                queue_channel = interaction.guild.get_channel(
+                    SUBMISSION_QUEUE_CHANNEL
+                )
+
+                try:
+
+                    queue_message = await queue_channel.fetch_message(
+                        queue_data[0]
+                    )
+
+                    approved_embed = discord.Embed(
+                        title="✅ Submission Approved",
+                        color=discord.Color.green()
+                    )
+
+                    approved_embed.add_field(
+                        name="",
+                        value=(
+                            f"**Quest #{self.quest_id} - {quest_title}**"
+                        ),
+                        inline=False
+                    )
+
+                    approved_embed.add_field(
+                        name="Member",
+                        value=f"<@{self.user_id}>",
+                        inline=False
+                    )
+
+                    approved_embed.add_field(
+                        name="Reward",
+                        value=f":moneybag: {reward_points} Gold Points",
+                        inline=False
+                    )
+
+                    approved_embed.add_field(
+                        name="Slots",
+                        value=f"{updated_claims}/{updated_max}",
+                        inline=False
+                    )
+
+                    approved_embed.add_field(
+                        name="Status",
+                        value="✅ Approved",
+                        inline=False
+                    )
+
+                    approved_embed.add_field(
+                        name="Processed By",
+                        value=interaction.user.mention,
+                        inline=False
+                    )
+
+                    member = interaction.guild.get_member(
+                        self.user_id
+                    )
+
+                    if member:
+                        approved_embed.set_thumbnail(
+                            url=member.display_avatar.url
+                        )
+
+                    approved_embed.set_footer(
+                        text="Submission successfully approved."
+                    )
+
+                    await queue_message.edit(
+                        embed=approved_embed
+                    )
+
+
+                except Exception as e:
+
+                    print(f"Queue embed update error: {e}")
 
             # GET POINTS
 
@@ -1217,12 +1932,12 @@ class ApprovalView(ui.View):
                 GOLD_LOGS_CHANNEL
             )
 
-            user = interaction.guild.get_member(
+            member = interaction.guild.get_member(
                 self.user_id
             )
 
             await logs_channel.send(
-                f"{user.mention} completed "
+                f"{member.mention} completed "
                 f"**Quest #{self.quest_id} - {quest_title}** "
                 f"and earned :moneybag:  {reward_points} **Gold Points**\n\n"
                 f"Approved by: {interaction.user.mention}\n"
@@ -1254,46 +1969,309 @@ class ApprovalView(ui.View):
                 )
                 return
 
-            cursor.execute("""
-            UPDATE submissions
-            SET status = 'denied'
-            WHERE id = ?
-            AND status != 'denied'
-            """, (self.submission_id,))
-
-            cursor.execute("""
-            UPDATE users
-            SET quests_denied = quests_denied + 1
-            WHERE user_id = ?
-            """, (self.user_id,))
-
-            conn.commit()
-
-            logs_channel = get_channel(
-                interaction.guild,
-                LOGS_CHANNEL
+            await interaction.response.send_modal(
+                DenyReasonModal(self, interaction.message)
             )
-
-            user = interaction.guild.get_member(
-                self.user_id
-            )
-
-            cursor.execute(""" SELECT title FROM quests WHERE quest_id = ? """, (self.quest_id,))
-            quest_data = cursor.fetchone()
-            quest_title = (quest_data[0] if quest_data and quest_data[0] else "Untitled Quest")
-
-            await logs_channel.send(
-                f"{user.mention}'s submission for "
-                f"**Quest #{self.quest_id} - {quest_title}** "
-                f"was denied by "
-                f"{interaction.user.mention}"
-            )
-
-            await interaction.message.delete()
 
         deny_button.callback = deny_callback
 
         self.add_item(deny_button)
+
+        # =========================
+        # DENY REASON MODAL
+        # =========================
+
+        class DenyReasonModal(ui.Modal):
+
+            def __init__(self, approval_view, approval_message):
+                super().__init__(title="Deny Submission")
+
+                self.approval_view = approval_view
+                self.approval_message = approval_message
+
+                self.reason = ui.TextInput(
+                    label="Reason for denial",
+                    placeholder="Explain why this submission was denied...",
+                    style=discord.TextStyle.paragraph,
+                    required=True,
+                    max_length=500
+                )
+
+                self.add_item(self.reason)
+
+            async def on_submit(self, interaction: discord.Interaction):
+
+                view = self.approval_view
+
+                # =========================
+                # UPDATE SUBMISSION
+                # =========================
+
+                cursor.execute("""
+                            UPDATE submissions
+                            SET status = 'denied'
+                            WHERE id = ?
+                            """, (view.submission_id,))
+
+                cursor.execute("""
+                            UPDATE users
+                            SET quests_denied = quests_denied + 1
+                            WHERE user_id = ?
+                            """, (view.user_id,))
+
+                conn.commit()
+
+                # =========================
+                # GET QUEST INFO
+                # =========================
+
+                cursor.execute("""
+                            SELECT
+                                title,
+                                current_claims,
+                                max_claims
+                            FROM quests
+                            WHERE quest_id = ?
+                            """, (view.quest_id,))
+
+                quest_data = cursor.fetchone()
+
+                quest_title = quest_data[0]
+                current_claims = quest_data[1]
+                max_claims = quest_data[2]
+
+                # =========================
+                # UPDATE QUEUE EMBED
+                # =========================
+
+                cursor.execute("""
+                            SELECT queue_message_id
+                            FROM submissions
+                            WHERE id = ?
+                            """, (view.submission_id,))
+
+                queue_data = cursor.fetchone()
+
+                if queue_data and queue_data[0]:
+
+                    queue_channel = interaction.guild.get_channel(
+                        SUBMISSION_QUEUE_CHANNEL
+                    )
+
+                    try:
+
+                        queue_message = await queue_channel.fetch_message(
+                            queue_data[0]
+                        )
+
+                        denied_embed = discord.Embed(
+                            title="❌ Submission Denied",
+                            color=discord.Color.red()
+                        )
+
+                        denied_embed.add_field(
+                            name="Quest",
+                            value=(
+                                f"**Quest #{view.quest_id} - "
+                                f"{quest_title}**"
+                            ),
+                            inline=False
+                        )
+
+                        denied_embed.add_field(
+                            name="Member",
+                            value=f"<@{view.user_id}>",
+                            inline=False
+                        )
+
+                        denied_embed.add_field(
+                            name="Slots",
+                            value=f"{current_claims}/{max_claims}",
+                            inline=False
+                        )
+
+                        denied_embed.add_field(
+                            name="Status",
+                            value="❌ Denied",
+                            inline=False
+                        )
+
+                        denied_embed.add_field(
+                            name="Reason",
+                            value=str(self.reason),
+                            inline=False
+                        )
+
+                        denied_embed.add_field(
+                            name="Processed By",
+                            value=interaction.user.mention,
+                            inline=False
+                        )
+
+                        member = interaction.guild.get_member(
+                            view.user_id
+                        )
+
+                        if member:
+                            denied_embed.set_thumbnail(
+                                url=member.display_avatar.url
+                            )
+
+                        denied_embed.set_footer(
+                            text="Submission was denied."
+                        )
+
+                        await queue_message.edit(
+                            embed=denied_embed
+                        )
+
+                    except Exception as e:
+
+                        print(f"Deny embed update error: {e}")
+
+                await self.approval_message.delete()
+                await interaction.response.send_message(
+                    "Submission denied.",
+                    ephemeral=True
+                )
+
+        # =========================
+        # QUEST FILLED BUTTON
+        # =========================
+
+        filled_button = ui.Button(
+            label="Qᴜᴇsᴛ Fɪʟʟᴇᴅ",
+            style=discord.ButtonStyle.secondary,
+            disabled=True,
+            custom_id=f"filled_{submission_id}"
+        )
+
+        # FILLED CALLBACK
+        # =========================
+
+        async def filled_callback(interaction: discord.Interaction):
+
+            # =========================
+            # UPDATE SUBMISSION STATUS
+            # =========================
+
+            cursor.execute("""
+            UPDATE submissions
+            SET status = 'filled'
+            WHERE id = ?
+            """, (self.submission_id,))
+
+            conn.commit()
+
+            # =========================
+            # GET QUEST INFO
+            # =========================
+
+            cursor.execute("""
+            SELECT title
+            FROM quests
+            WHERE quest_id = ?
+            """, (self.quest_id,))
+
+            quest_data = cursor.fetchone()
+
+            quest_title = (
+                quest_data[0]
+                if quest_data
+                else "Unknown Quest"
+            )
+
+            # =========================
+            # UPDATE QUEUE EMBED
+            # =========================
+
+            cursor.execute("""
+            SELECT queue_message_id
+            FROM submissions
+            WHERE id = ?
+            """, (self.submission_id,))
+
+            queue_data = cursor.fetchone()
+
+            if queue_data and queue_data[0]:
+
+                queue_channel = interaction.guild.get_channel(
+                    SUBMISSION_QUEUE_CHANNEL
+                )
+
+                try:
+
+                    queue_message = await queue_channel.fetch_message(
+                        queue_data[0]
+                    )
+
+                    filled_embed = discord.Embed(
+                        title="⚠️ Quest Filled",
+                        color=discord.Color.orange()
+                    )
+
+                    filled_embed.add_field(
+                        name="Quest",
+                        value=f"**Quest #{self.quest_id} - {quest_title}**",
+                        inline=False
+                    )
+
+                    filled_embed.add_field(
+                        name="Member",
+                        value=f"<@{self.user_id}>",
+                        inline=False
+                    )
+
+                    filled_embed.add_field(
+                        name="Status",
+                        value="Quest was already filled before approval.",
+                        inline=False
+                    )
+
+                    filled_embed.add_field(
+                        name="Processed By",
+                        value=interaction.user.mention,
+                        inline=False
+                    )
+
+                    member = interaction.guild.get_member(
+                        self.user_id
+                    )
+
+                    if member:
+                        filled_embed.set_thumbnail(
+                            url=member.display_avatar.url
+                        )
+
+                    filled_embed.set_footer(
+                        text="Submission marked as filled."
+                    )
+
+                    await queue_message.edit(
+                        embed=filled_embed
+                    )
+
+                except Exception as e:
+
+                    print(f"Filled queue update error: {e}")
+
+            # =========================
+            # DELETE APPROVAL EMBED
+            # =========================
+
+            await interaction.message.delete()
+
+            # =========================
+            # RESPONSE
+            # =========================
+
+            await interaction.response.send_message(
+                "Submission marked as quest filled.",
+                ephemeral=True
+            )
+
+        filled_button.callback = filled_callback
+        self.add_item(filled_button)
 
 
 # =========================
@@ -1404,6 +2382,8 @@ class CommunityQuestView(ui.View):
             button: ui.Button
     ):
 
+        await interaction.response.defer(ephemeral=True)
+
         # =========================
         # CHECK DUPLICATE CLAIM
         # =========================
@@ -1423,11 +2403,67 @@ class CommunityQuestView(ui.View):
         existing_claim = cursor.fetchone()
 
         if existing_claim:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You already claimed this quest.",
                 ephemeral=True
             )
 
+            return
+
+        # =========================
+        # GET QUEST DATA
+        # =========================
+
+        cursor.execute("""
+        SELECT
+            created_by,
+            current_claims,
+            max_claims,
+            completed,
+            title,
+            message_id,
+            ping_message_id
+        FROM quests
+        WHERE quest_id = ?
+        """, (self.quest_id,))
+
+        quest_data = cursor.fetchone()
+
+        if not quest_data:
+            await interaction.followup.send(
+                "Quest not found.",
+                ephemeral=True
+            )
+            return
+
+        created_by = quest_data[0]
+        current_claims = quest_data[1]
+        max_claims = quest_data[2]
+        completed = quest_data[3]
+        quest_title = quest_data[4]
+        message_id = quest_data[5]
+        ping_message_id = quest_data[6]
+
+        # =========================
+        # CREATOR CANNOT CLAIM
+        # =========================
+
+        if interaction.user.id == created_by:
+            await interaction.followup.send(
+                "❌ You cannot claim your own quest.",
+                ephemeral=True
+            )
+            return
+
+        # =========================
+        # QUEST FULL
+        # =========================
+
+        if completed or current_claims >= max_claims:
+            await interaction.followup.send(
+                "❌ This quest is already completed.",
+                ephemeral=True
+            )
             return
 
         # =========================
@@ -1441,6 +2477,16 @@ class CommunityQuestView(ui.View):
             engagements = COALESCE(engagements, 0) + 1
         WHERE user_id = ?
         """, (interaction.user.id,))
+
+        # =========================
+        # INCREASE CLAIM COUNT
+        # =========================
+
+        cursor.execute("""
+        UPDATE quests
+        SET current_claims = current_claims + 1
+        WHERE quest_id = ?
+        """, (self.quest_id,))
 
         # =========================
         # SAVE CLAIM
@@ -1460,6 +2506,290 @@ class CommunityQuestView(ui.View):
             interaction.user.id,
             datetime.now(UTC).isoformat()
         ))
+
+        # =========================
+        # CHECK UPDATED CLAIMS
+        # =========================
+
+        cursor.execute("""
+        SELECT
+            current_claims,
+            max_claims
+        FROM quests
+        WHERE quest_id = ?
+        """, (self.quest_id,))
+
+        updated_quest = cursor.fetchone()
+
+        updated_claims = updated_quest[0]
+        updated_max = updated_quest[1]
+
+        # =========================
+        # UPDATE QUEST EMBED
+        # =========================
+
+        try:
+
+            quest_channel = guild.get_channel(QUEST_CHANNEL)
+
+            quest_message = await quest_channel.fetch_message(
+                message_id
+            )
+
+            live_embed = discord.Embed(
+                title=f"Quest #{self.quest_id} - {quest_title}",
+                color=0x2ECC71
+            )
+
+            live_embed.add_field(
+                name="Available Claims",
+                value=f"{updated_claims}/{updated_max}",
+                inline=False
+            )
+
+            live_embed.add_field(
+                name="Reward",
+                value=":gem: +1 Creator Point Per Claim",
+                inline=False
+            )
+
+            live_embed.add_field(
+                name="Raid Link",
+                value=f"[Click Here to Raid]({self.tweet_link})",
+                inline=False
+            )
+
+            live_embed.add_field(
+                name="Task",
+                value=(
+                    "Like, and comment on the post.\n"
+                    "Then click Claim Points."
+                ),
+                inline=False
+            )
+
+            live_embed.add_field(
+                name="Reminder",
+                value=(
+                    "⚠️ Do not cheat the system.\n"
+                    "Users caught fake claiming may be banned."
+                ),
+                inline=False
+            )
+
+            creator_member = guild.get_member(created_by)
+
+            if creator_member:
+                live_embed.set_thumbnail(
+                    url=creator_member.display_avatar.url
+                )
+
+            await quest_message.edit(
+                embed=live_embed,
+                view=self
+            )
+
+        except Exception as e:
+            print(f"Live quest update error: {e}")
+
+        # =========================
+        # COMPLETE QUEST
+        # =========================
+
+        if updated_claims >= updated_max:
+
+            cursor.execute("""
+            UPDATE quests
+            SET completed = 1
+            WHERE quest_id = ?
+            """, (self.quest_id,))
+
+            conn.commit()
+
+            # =========================
+            # GET QUEST MESSAGE
+            # =========================
+
+            try:
+
+                quest_channel = guild.get_channel(QUEST_CHANNEL)
+
+                quest_message = await quest_channel.fetch_message(
+                    message_id
+                )
+
+                # =========================
+                # CREATE THREAD
+                # =========================
+
+                thread = await quest_message.create_thread(
+                    name=f"Completed • {quest_title}",
+                    auto_archive_duration=1440
+                )
+
+                # =========================
+                # GET ALL CLAIMERS
+                # =========================
+
+                cursor.execute("""
+                SELECT user_id
+                FROM quest_claims
+                WHERE quest_id = ?
+                """, (self.quest_id,))
+
+                claimers = cursor.fetchall()
+
+                claimer_list = []
+
+                for user_data in claimers:
+
+                    user_id = user_data[0]
+
+                    member = guild.get_member(user_id)
+
+                    if member:
+                        claimer_list.append(member.mention)
+
+                if not claimer_list:
+                    claimer_text = "No claimers."
+                else:
+                    claimer_text = "\n".join(claimer_list)
+
+                # =========================
+                # COMPLETION EMBED
+                # =========================
+
+                completed_embed = discord.Embed(
+                    title="✅ Community Quest Completed",
+                    color=discord.Color.green()
+                )
+
+                creator_member = guild.get_member(created_by)
+
+                if creator_member:
+                    completed_embed.set_thumbnail(
+                        url=creator_member.display_avatar.url
+                    )
+
+                completed_embed.add_field(
+                    name="Quest",
+                    value=quest_title,
+                    inline=False
+                )
+
+                completed_embed.add_field(
+                    name="Total Claims",
+                    value=f"{updated_claims}/{updated_max}",
+                    inline=False
+                )
+
+                completed_embed.add_field(
+                    name="Members Who Claimed",
+                    value=claimer_text,
+                    inline=False
+                )
+
+                completed_embed.set_footer(
+                    text=(
+                        "Review the claims carefully. "
+                        "Report users if necessary."
+                    )
+                )
+
+                await thread.send(
+                    content=f"<@{created_by}> Your quest is now completed.",
+                    embed=completed_embed
+                )
+
+                # =========================
+                # EDIT ORIGINAL QUEST MESSAGE
+                # =========================
+
+                completed_embed_main = discord.Embed(
+                    title=f"Quest #{self.quest_id} - {quest_title}",
+                    color=discord.Color.dark_grey()
+                )
+
+                creator_member = guild.get_member(created_by)
+
+                if creator_member:
+                    completed_embed_main.set_thumbnail(
+                        url=creator_member.display_avatar.url
+                    )
+
+                completed_embed_main.add_field(
+                    name="Status",
+                    value="✅ COMPLETED",
+                    inline=False
+                )
+
+                completed_embed_main.add_field(
+                    name="Claims",
+                    value=f"{updated_claims}/{updated_max}",
+                    inline=False
+                )
+
+                completed_embed_main.add_field(
+                    name="Raid Link",
+                    value=f"[Click Here to Raid]({self.tweet_link})",
+                    inline=False
+                )
+
+                completed_embed_main.add_field(
+                    name="Reward",
+                    value=":gem: +1 Creator Point",
+                    inline=False
+                )
+
+                completed_embed_main.set_footer(
+                    text="This quest has reached maximum claims."
+                )
+
+                # =========================
+                # DISABLE BUTTONS
+                # =========================
+
+                disabled_view = ui.View(timeout=None)
+
+                disabled_view.add_item(
+                    ui.Button(
+                        label="Raid Link",
+                        url=self.tweet_link,
+                        style=discord.ButtonStyle.link
+                    )
+                )
+
+                disabled_view.add_item(
+                    ui.Button(
+                        label="Quest Completed",
+                        style=discord.ButtonStyle.secondary,
+                        disabled=True
+                    )
+                )
+
+                await quest_message.edit(
+                    embed=completed_embed_main,
+                    view=disabled_view
+                )
+
+                # =========================
+                # DELETE QUEST PING
+                # =========================
+
+                try:
+
+                    if ping_message_id:
+                        ping_message = await quest_channel.fetch_message(
+                            ping_message_id
+                        )
+
+                        await ping_message.delete()
+
+                except:
+                    pass
+
+            except Exception as e:
+                print(f"Quest completion thread error: {e}")
 
         # =========================
         # GET TOTAL POINTS
@@ -1492,7 +2822,7 @@ class CommunityQuestView(ui.View):
                 f"**Total Creator Points:** :gem: {total_points}"
             )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "✅ You successfully claimed :gem: +1 Creator Point.",
             ephemeral=True
         )
@@ -1898,7 +3228,7 @@ async def setup(interaction: discord.Interaction):
 
 
 # =========================
-# QUEST CREATE COMMAND
+# PAID QUEST CREATE COMMAND
 # =========================
 
 @bot.tree.command(name="paid_quest")
@@ -2004,6 +3334,15 @@ async def paid_quest(
 
             self.add_item(self.tweet_link)
 
+            self.max_claims = ui.TextInput(
+                label="Max Claim",
+                placeholder="Example: 20",
+                required=True,
+                max_length=3
+            )
+
+            self.add_item(self.max_claims)
+
         async def on_submit(
                 self,
                 modal_interaction: discord.Interaction
@@ -2065,9 +3404,24 @@ async def paid_quest(
             if self.quest_type == "tweet":
                 instructions_text = str(self.instructions)
 
+            try:
+                max_claims = int(str(self.max_claims))
+            except:
+                await modal_interaction.response.send_message(
+                    "Invalid maximum claims amount.",
+                    ephemeral=True
+                )
+                return
+
+            if max_claims <= 0:
+                await modal_interaction.response.send_message(
+                    "Claims must be higher than 0.",
+                    ephemeral=True
+                )
+                return
+
             created_at = datetime.now(UTC)
 
-            expires_at = created_at + timedelta(hours=24)
 
             cursor.execute("""
             INSERT INTO quests (
@@ -2078,9 +3432,11 @@ async def paid_quest(
                 instructions,
                 created_by,
                 created_at,
-                expires_at
+                max_claims,
+                current_claims,
+                completed
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 str(self.quest_title),
                 str(self.tweet_link),
@@ -2089,7 +3445,9 @@ async def paid_quest(
                 instructions_text,
                 modal_interaction.user.id,
                 created_at.isoformat(),
-                expires_at.isoformat()
+                max_claims,
+                0,
+                0
             ))
 
             conn.commit()
@@ -2106,8 +3464,14 @@ async def paid_quest(
             )
 
             embed.add_field(
-                name="Time Left",
-                value="24 Hours Left",
+                name="Available Claims",
+                value=f"0/{max_claims}",
+                inline=False
+            )
+
+            embed.add_field(
+                name="Reward",
+                value=f":moneybag: {reward_points} Gold Points",
                 inline=False
             )
 
@@ -2175,14 +3539,23 @@ async def paid_quest(
                 quest_id
             ))
 
-            conn.commit()
-
-            await modal_interaction.channel.send(
+            ping_message = await modal_interaction.channel.send(
                 f"<@&{MEMBER_ROLE_ID}> "
                 f"Raid now to earn "
                 f":moneybag: {reward_points} "
                 f"**Gold Points**"
             )
+
+            cursor.execute("""
+            UPDATE quests
+            SET ping_message_id = ?
+            WHERE quest_id = ?
+            """, (
+                ping_message.id,
+                quest_id
+            ))
+
+            conn.commit()
 
             await modal_interaction.response.send_message(
                 "Quest created.",
@@ -2564,7 +3937,25 @@ async def leaderboard(interaction: discord.Interaction):
     """)
     users = cursor.fetchall()
 
-    print(users)
+    # =========================
+    # FILTER CREATOR ROLE ONLY
+    # =========================
+
+    filtered_users = []
+
+    for user in users:
+
+        member = interaction.guild.get_member(user[0])
+
+        if not member:
+            continue
+
+        if not any(role.id == MEMBER_ROLE_ID for role in member.roles):
+            continue
+
+        filtered_users.append(user)
+
+    users = filtered_users
 
     if not users:
         await interaction.response.send_message(
@@ -2818,7 +4209,25 @@ async def engagement_leaderboard(interaction: discord.Interaction):
     """)
     users = cursor.fetchall()
 
-    print(users)
+    # =========================
+    # FILTER CREATOR ROLE ONLY
+    # =========================
+
+    filtered_users = []
+
+    for user in users:
+
+        member = interaction.guild.get_member(user[0])
+
+        if not member:
+            continue
+
+        if not any(role.id == MEMBER_ROLE_ID for role in member.roles):
+            continue
+
+        filtered_users.append(user)
+
+    users = filtered_users
 
     if not users:
         await interaction.response.send_message(
@@ -3143,6 +4552,15 @@ async def create_quest(interaction: discord.Interaction):
 
             self.add_item(self.tweet_link)
 
+            self.point_budget = ui.TextInput(
+                label="How Many Creator Points To Spend",
+                placeholder="Minimum 10 Creator Points",
+                required=True,
+                max_length=3
+            )
+
+            self.add_item(self.point_budget)
+
         async def on_submit(
                 self,
                 modal_interaction: discord.Interaction
@@ -3175,12 +4593,27 @@ async def create_quest(interaction: discord.Interaction):
             # CHECK POINTS
             # =========================
 
-            if current_points < 20:
+            try:
+                budget = int(str(self.point_budget))
+            except:
                 await modal_interaction.response.send_message(
-                    "❌ You need at least :gem: 20 Creator Points to create a quest.",
+                    "❌ Invalid point amount.",
                     ephemeral=True
                 )
+                return
 
+            if budget <= 0:
+                await modal_interaction.response.send_message(
+                    "❌ Minimum Creator Point budget is :gem: 10.",
+                    ephemeral=True
+                )
+                return
+
+            if current_points < budget:
+                await modal_interaction.response.send_message(
+                    f"❌ You only have :gem: {current_points} Creator Points.",
+                    ephemeral=True
+                )
                 return
 
             # =========================
@@ -3193,7 +4626,7 @@ async def create_quest(interaction: discord.Interaction):
 
             expected = (
                 f"https://x.com/"
-                f"{registered_username.lower()}"
+                f"{registered_username.lower()}/status"
             )
 
             if not submitted_link.startswith(expected):
@@ -3211,15 +4644,17 @@ async def create_quest(interaction: discord.Interaction):
 
             class ConfirmQuestView(ui.View):
 
-                def __init__(self, quest_title, submitted_link, modal_interaction):
+                def __init__(self, quest_title, submitted_link, budget, modal_interaction):
                     super().__init__(timeout=180)
 
                     self.quest_title = quest_title
                     self.submitted_link = submitted_link
+                    self.budget = budget
                     self.modal_interaction = modal_interaction
+                    self.confirm.label = f"Run Quest (-{budget} Points)"
 
                 @ui.button(
-                    label="Run Quest (-20 Points)",
+                    label="Run Quest",
                     style=discord.ButtonStyle.green
                 )
                 async def confirm(
@@ -3228,26 +4663,21 @@ async def create_quest(interaction: discord.Interaction):
                         button: ui.Button
                 ):
                     # =========================
-                    # REMOVE 20 POINTS
+                    # REMOVE POINTS
                     # ADD CREATED QUEST COUNT
                     # =========================
 
                     cursor.execute("""
                     UPDATE users
                     SET
-                        points = COALESCE(points, 0) - 20,
+                        points = COALESCE(points, 0) - ?,
                         quests_created = COALESCE(quests_created, 0) + 1
                     WHERE user_id = ?
                     """, (
-                        self.modal_interaction.user.id,
+                        self.budget, self.modal_interaction.user.id,
                     ))
 
                     created_at = datetime.now(UTC)
-
-                    expires_at = (
-                            created_at +
-                            timedelta(hours=24)
-                    )
 
                     # =========================
                     # INSERT QUEST
@@ -3259,15 +4689,19 @@ async def create_quest(interaction: discord.Interaction):
                         tweet_link,
                         created_by,
                         created_at,
-                        expires_at
+                        max_claims,
+                        current_claims,
+                        completed
                     )
-                    VALUES (?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, (
                         self.quest_title,
                         self.submitted_link,
                         self.modal_interaction.user.id,
                         created_at.isoformat(),
-                        expires_at.isoformat()
+                        self.budget,
+                        0,
+                        0
                     ))
 
                     conn.commit()
@@ -3301,8 +4735,14 @@ async def create_quest(interaction: discord.Interaction):
                     )
 
                     embed.add_field(
-                        name="Time Left",
-                        value="24 Hours Left",
+                        name="Available Claims",
+                        value=f"0/{self.budget}",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reward",
+                        value=":gem: +1 Creator Point Per Claim",
                         inline=False
                     )
 
@@ -3318,7 +4758,7 @@ async def create_quest(interaction: discord.Interaction):
                     embed.add_field(
                         name="Task",
                         value=(
-                            "Like, repost, and comment "
+                            "Like, and comment "
                             "on the post.\n"
                             "Then click Claim Points."
                         ),
@@ -3357,7 +4797,7 @@ async def create_quest(interaction: discord.Interaction):
                         )
                     )
 
-                    await quest_channel.send(
+                    ping_message = await quest_channel.send(
                         f"<@&{MEMBER_ROLE_ID}> New Creator Quest is Live!"
                     )
 
@@ -3367,10 +4807,13 @@ async def create_quest(interaction: discord.Interaction):
 
                     cursor.execute("""
                     UPDATE quests
-                    SET message_id = ?
+                    SET 
+                        message_id = ?,
+                        ping_message_id =?
                     WHERE quest_id = ?
                     """, (
                         msg.id,
+                        ping_message.id,
                         quest_id
                     ))
 
@@ -3387,7 +4830,7 @@ async def create_quest(interaction: discord.Interaction):
                             f"**Creator Quest Created**\n\n"
                             f"**Creator:** {self.modal_interaction.user.mention}\n"
                             f"**Quest:** {self.quest_title}\n"
-                            f"**Cost:** :gem: -20 **Creator Points**\n"
+                            f"**Cost:** :gem: -{self.budget} **Creator Points**\n"
                             f"**Total Creator Points:** :gem: {total_points}"
                         )
 
@@ -3410,11 +4853,12 @@ async def create_quest(interaction: discord.Interaction):
 
             await modal_interaction.response.send_message(
                 f"⚠️ Creating this quest will cost "
-                f":gem: 20 Creator Points.\n\n"
+                f":gem: {budget} Creator Points.\n\n"
                 f"Do you want to continue?",
                 view=ConfirmQuestView(
                     str(self.quest_title),
                     submitted_link,
+                    budget,
                     modal_interaction
                 ),
                 ephemeral=True
@@ -3423,8 +4867,6 @@ async def create_quest(interaction: discord.Interaction):
     await interaction.response.send_modal(
         CreateQuestModal()
     )
-
-
 
 # =========================
 # SHOP VIEW
@@ -3435,16 +4877,62 @@ class ShopView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @ui.button(
-        label="Exchange 100 Gold Points",
-        style=discord.ButtonStyle.green,
-        custom_id="exchange_gold_button"
-    )
-    async def exchange_gold(
-            self,
-            interaction: discord.Interaction,
-            button: ui.Button
-    ):
+        self.add_item(ExchangeSelect())
+
+
+# =========================
+# SHOP DROPDOWN
+# =========================
+
+class ExchangeSelect(ui.Select):
+
+    def __init__(self):
+
+        options = [
+
+            discord.SelectOption(
+                label="$10",
+                description="Exchange 100 Gold Points",
+                value="100"
+            ),
+
+            discord.SelectOption(
+                label="$20",
+                description="Exchange 200 Gold Points",
+                value="200"
+            ),
+
+            discord.SelectOption(
+                label="$30",
+                description="Exchange 300 Gold Points",
+                value="300"
+            ),
+
+            discord.SelectOption(
+                label="$50",
+                description="Exchange 500 Gold Points",
+                value="500"
+            )
+        ]
+
+        super().__init__(
+            placeholder="Select exchange amount",
+            options=options,
+            custom_id="exchange_dropdown"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+
+        gold_cost = int(self.values[0])
+
+        EXCHANGE_OPTIONS = {
+            100: "$10",
+            200: "$20",
+            300: "$30",
+            500: "$50"
+        }
+
+        exchange_reward = EXCHANGE_OPTIONS[gold_cost]
 
         # =========================
         # CHECK GOLD
@@ -3462,13 +4950,19 @@ class ShopView(ui.View):
 
         total_gold = result[0] if result else 0
 
-        if total_gold < EXCHANGE_GOLD_COST:
-            needed = EXCHANGE_GOLD_COST - total_gold
+        if total_gold < gold_cost:
+
+            needed = gold_cost - total_gold
 
             await interaction.response.send_message(
-                f"You need :moneybag: {EXCHANGE_GOLD_COST} Gold Points to exchange for **$10**.\n\n"
-                f"**Your Current Gold Points:** :moneybag: {total_gold}\n"
-                f"**Gold Points Needed:** :moneybag: {needed}",
+                f"You need :moneybag: {gold_cost} Gold Points "
+                f"to exchange for **{exchange_reward}**.\n\n"
+
+                f"**Your Current Gold Points:** "
+                f":moneybag: {total_gold}\n"
+
+                f"**Gold Points Needed:** "
+                f":moneybag: {needed}",
                 ephemeral=True
             )
 
@@ -3478,157 +4972,192 @@ class ShopView(ui.View):
         # CONFIRM VIEW
         # =========================
 
-        class ConfirmExchangeView(ui.View):
-
-            def __init__(self):
-                super().__init__(timeout=180)
-
-            @ui.button(
-                label="Continue Exchange",
-                style=discord.ButtonStyle.green
-            )
-            async def confirm(
-                    self,
-                    confirm_interaction: discord.Interaction,
-                    button: ui.Button
-            ):
-                # =========================
-                # REMOVE GOLD
-                # =========================
-
-                cursor.execute("""
-                UPDATE users
-                SET gold_points = gold_points - ?
-                WHERE user_id = ?
-                """, (
-                    EXCHANGE_GOLD_COST,
-                    interaction.user.id
-                ))
-
-                conn.commit()
-
-                # =========================
-                # CREATE SUPPORT CHANNEL
-                # =========================
-
-                guild = confirm_interaction.guild
-
-                category = guild.get_channel(
-                    SUPPORT_CATEGORY_ID
-                )
-
-                admin_role = guild.get_role(
-                    ADMIN_ROLE_ID
-                )
-
-                overwrites = {
-
-                    guild.default_role: discord.PermissionOverwrite(
-                        view_channel=False
-                    ),
-
-                    interaction.user: discord.PermissionOverwrite(
-                        view_channel=True,
-                        send_messages=True,
-                        read_message_history=True
-                    ),
-
-                    admin_role: discord.PermissionOverwrite(
-                        view_channel=True,
-                        send_messages=True,
-                        read_message_history=True
-                    ),
-
-                    guild.me: discord.PermissionOverwrite(
-                        view_channel=True,
-                        send_messages=True,
-                        manage_channels=True
-                    )
-                }
-
-                channel_name = (
-                    interaction.user.display_name
-                    .lower()
-                    .replace(" ", "-")
-                )
-
-                support_channel = await guild.create_text_channel(
-                    name=channel_name,
-                    category=category,
-                    overwrites=overwrites
-                )
-
-                # 🔥 IMPORTANT
-                await support_channel.edit(
-                    topic=f"user_id:{interaction.user.id}"
-                )
-
-                embed = discord.Embed(
-                    title="💰 Gold Exchange Request",
-                    color=0xF1C40F
-                )
-
-                embed.add_field(name="User", value=interaction.user.mention, inline=False)
-                embed.add_field(name="Exchange", value=f"{EXCHANGE_GOLD_COST} → {EXCHANGE_REWARD}", inline=False)
-                embed.add_field(name="Status", value="Pending Admin Review", inline=False)
-                embed.set_thumbnail(url=interaction.user.display_avatar.url)
-
-                # ✅ ADD IMAGE HERE
-                embed.set_image(
-                    url="https://cdn.discordapp.com/attachments/1225024450345439313/1507356644667949217/10_dollar_velorax.png?ex=6a124385&is=6a10f205&hm=f1cb3d036fa2cafb3ef83867c680cbe9014a235f4ca870a12e06a9545d91eb01")
-
-                await support_channel.send(
-                    content=f"{interaction.user.mention} <@&{ADMIN_ROLE_ID}>",
-                    embed=embed,
-                    view=CloseTicketView()  # ✅ FIXED HERE
-                )
-
-                # =========================
-                # LOGS
-                # =========================
-
-                log_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
-
-                if log_channel:
-                    cursor.execute("""
-                    SELECT gold_points
-                    FROM users
-                    WHERE user_id = ?
-                    """, (
-                        interaction.user.id,
-                    ))
-
-                    updated = cursor.fetchone()
-
-                    remaining_gold = updated[0] if updated else 0
-
-                    await log_channel.send(
-                        f"💰 **Gold Exchange Started**\n\n"
-                        f"👤 **User:** {interaction.user.mention}\n"
-                        f"**Spent:** :moneybag: "
-                        f"{EXCHANGE_GOLD_COST} Gold Points\n"
-                        f"**Exchange Value:** **{EXCHANGE_REWARD}**\n"
-                        f"**Remaining Gold:** "
-                        f":moneybag: {remaining_gold}"
-                    )
-
-                await confirm_interaction.response.edit_message(
-                    content=(
-                        f"✅ Exchange request created:\n"
-                        f"{support_channel.mention}"
-                    ),
-                    embed=None,
-                    view=None
-                )
-
         await interaction.response.send_message(
             f"⚠️ Exchange "
-            f":moneybag:  {EXCHANGE_GOLD_COST} Gold Points "
-            f"for **{EXCHANGE_REWARD}**?",
-            view=ConfirmExchangeView(),
+            f":moneybag: {gold_cost} Gold Points "
+            f"for **{exchange_reward}**?",
+
+            view=ConfirmExchangeView(
+                gold_cost,
+                exchange_reward
+            ),
+
             ephemeral=True
         )
 
+
+# =========================
+# CONFIRM EXCHANGE VIEW
+# =========================
+
+class ConfirmExchangeView(ui.View):
+
+    def __init__(self, gold_cost, exchange_reward):
+
+        super().__init__(timeout=180)
+
+        self.gold_cost = gold_cost
+        self.exchange_reward = exchange_reward
+
+    @ui.button(
+        label="Continue Exchange",
+        style=discord.ButtonStyle.green
+    )
+    async def confirm(
+            self,
+            confirm_interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        # =========================
+        # REMOVE GOLD
+        # =========================
+
+        cursor.execute("""
+        UPDATE users
+        SET gold_points = gold_points - ?
+        WHERE user_id = ?
+        """, (
+            self.gold_cost,
+            confirm_interaction.user.id
+        ))
+
+        conn.commit()
+
+        # =========================
+        # CREATE SUPPORT CHANNEL
+        # =========================
+
+        guild = confirm_interaction.guild
+
+        category = guild.get_channel(
+            SUPPORT_CATEGORY_ID
+        )
+
+        admin_role = guild.get_role(
+            ADMIN_ROLE_ID
+        )
+
+        overwrites = {
+
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False
+            ),
+
+            confirm_interaction.user: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            ),
+
+            admin_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            ),
+
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True
+            )
+        }
+
+        channel_name = (
+            confirm_interaction.user.display_name
+            .lower()
+            .replace(" ", "-")
+        )
+
+        support_channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites
+        )
+
+        await support_channel.edit(
+            topic=f"user_id:{confirm_interaction.user.id}"
+        )
+
+        # =========================
+        # EMBED
+        # =========================
+
+        embed = discord.Embed(
+            title="💰 Gold Exchange Request",
+            color=0xF1C40F
+        )
+
+        embed.add_field(
+            name="User",
+            value=confirm_interaction.user.mention,
+            inline=False
+        )
+
+        embed.add_field(
+            name="Exchange",
+            value=f"{self.gold_cost} → {self.exchange_reward}",
+            inline=False
+        )
+
+        embed.add_field(
+            name="Status",
+            value="Pending Admin Review",
+            inline=False
+        )
+
+        embed.set_thumbnail(
+            url=confirm_interaction.user.display_avatar.url
+        )
+
+        embed.set_image(
+            url="https://cdn.discordapp.com/attachments/1225024450345439313/1507356644667949217/10_dollar_velorax.png?ex=6a124385&is=6a10f205&hm=f1cb3d036fa2cafb3ef83867c680cbe9014a235f4ca870a12e06a9545d91eb01"
+        )
+
+        await support_channel.send(
+            content=f"{confirm_interaction.user.mention} <@&{ADMIN_ROLE_ID}>",
+            embed=embed,
+            view=CloseTicketView()
+        )
+
+        # =========================
+        # LOGS
+        # =========================
+
+        log_channel = guild.get_channel(
+            GOLD_LOGS_CHANNEL
+        )
+
+        if log_channel:
+
+            cursor.execute("""
+            SELECT gold_points
+            FROM users
+            WHERE user_id = ?
+            """, (
+                confirm_interaction.user.id,
+            ))
+
+            updated = cursor.fetchone()
+
+            remaining_gold = updated[0] if updated else 0
+
+            await log_channel.send(
+                f"💰 **Gold Exchange Started**\n\n"
+                f"👤 **User:** {confirm_interaction.user.mention}\n"
+                f"**Spent:** :moneybag: {self.gold_cost} Gold Points\n"
+                f"**Exchange Value:** **{self.exchange_reward}**\n"
+                f"**Remaining Gold:** :moneybag: {remaining_gold}"
+            )
+
+        await confirm_interaction.response.edit_message(
+            content=(
+                f"✅ Exchange request created:\n"
+                f"{support_channel.mention}"
+            ),
+            embed=None,
+            view=None
+        )
 
 # =========================
 # CLOSED TICKET VIEW
@@ -3897,13 +5426,13 @@ class PayoutConfirmView(ui.View):
 
             embed.add_field(
                 name="Exchange",
-                value=f"{EXCHANGE_GOLD_COST} Gold Points",
+                value=f"{self.gold_cost} Gold Points",
                 inline=True
             )
 
             embed.add_field(
                 name="Received",
-                value=f"{EXCHANGE_REWARD}",
+                value=f"{cash_amount}",
                 inline=True
             )
 
@@ -3988,6 +5517,128 @@ class ReportModal(ui.Modal, title="Submit Report"):
             ephemeral=True
         )
 
+@bot.tree.command(name="available_tasks")
+@app_commands.describe(
+    amount="How many active quests to show"
+)
+async def available_tasks(
+        interaction: discord.Interaction,
+        amount: int = 10
+):
+
+    # =========================
+    # CHANNEL CHECK
+    # =========================
+
+    if interaction.channel.id != AVAILABLE_QUEST_CHANNEL:
+
+        channel = interaction.guild.get_channel(
+            AVAILABLE_QUEST_CHANNEL
+        )
+
+        mention = (
+            channel.mention
+            if channel
+            else "#active-quests"
+        )
+
+        await interaction.response.send_message(
+            f"Use this command in {mention}",
+            ephemeral=True
+        )
+
+        return
+
+    # =========================
+    # LIMIT AMOUNT
+    # =========================
+
+    if amount <= 0:
+        amount = 10
+
+    if amount > 50:
+        amount = 50
+
+    # =========================
+    # GET ACTIVE QUESTS
+    # =========================
+
+    cursor.execute("""
+    SELECT
+        quest_id,
+        title,
+        message_id,
+        current_claims,
+        max_claims
+    FROM quests
+    WHERE completed = 0
+    ORDER BY quest_id ASC
+    LIMIT ?
+    """, (amount,))
+
+    quests = cursor.fetchall()
+
+    if not quests:
+        await interaction.response.send_message(
+            "❌ No active quests available.",
+            ephemeral=True
+        )
+
+        return
+
+    # =========================
+    # EMBED
+    # =========================
+
+    embed = discord.Embed(
+        title="📜 Available Community Quests",
+        color=0x2ECC71
+    )
+
+    quest_channel = interaction.guild.get_channel(
+        QUEST_CHANNEL
+    )
+
+    for (
+            quest_id,
+            title,
+            message_id,
+            current_claims,
+            max_claims
+    ) in quests:
+
+        remaining = max_claims - current_claims
+
+        quest_link = (
+            f"https://discord.com/channels/"
+            f"{interaction.guild.id}/"
+            f"{QUEST_CHANNEL}/"
+            f"{message_id}"
+        )
+
+        embed.add_field(
+            name=f"Quest #{quest_id}",
+            value=(
+                f"**{title}**\n"
+                f"[Jump to Quest]({quest_link})\n"
+                f"Claims: {current_claims}/{max_claims}\n"
+                f"Remaining Slots: {remaining}"
+            ),
+            inline=False
+        )
+
+    embed.set_footer(
+        text=f"Showing {len(quests)} active quests"
+    )
+
+    # =========================
+    # SEND
+    # =========================
+
+    await interaction.response.send_message(
+        embed=embed,
+        ephemeral=True
+    )
 
 @bot.tree.command(name="report")
 async def report(interaction: discord.Interaction, user: discord.Member):
@@ -4375,6 +6026,165 @@ async def aj_board2(interaction: discord.Interaction, attachment: discord.Attach
     await interaction.response.send_message("✅ Database replaced successfully.", ephemeral=True)
 
 
+# =========================
+# SHOP VIEW
+# =========================
+class ShopView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ExchangeSelect())
+
+
+# =========================
+# SEND SHOP EMBED
+# =========================
+
+@bot.tree.command(name="send_shop")
+async def send_shop(interaction: discord.Interaction):
+
+    if interaction.user.id != GUILD_OWNER_ID:
+
+        await interaction.response.send_message(
+            "You cannot use this command.",
+            ephemeral=True
+        )
+
+        return
+
+    shop_channel = interaction.guild.get_channel(
+        SHOP_CHANNEL
+    )
+
+    if not shop_channel:
+
+        await interaction.response.send_message(
+            "Shop channel not found.",
+            ephemeral=True
+        )
+
+        return
+
+    embed = discord.Embed(
+        title="💰 Gold Point Exchange",
+        description=(
+            "Exchange your :moneybag: Gold Points into cash rewards.\n\n"
+            "• 100 = $10\n"
+            "• 200 = $20\n"
+            "• 300 = $30\n"
+            "• 500 = $50"
+        ),
+        color=0xF1C40F
+    )
+
+    embed.add_field(
+        name="How it works",
+        value=(
+            "• Select an exchange amount\n"
+            "• A support ticket will open\n"
+            "• Admin will process your payout"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="Important",
+        value=(
+            "⚠️ Abuse or fake requests may result "
+            "in removal from rewards."
+        ),
+        inline=False
+    )
+
+    embed.set_image(
+        url="https://cdn.discordapp.com/attachments/1225024450345439313/1507356644667949217/10_dollar_velorax.png"
+    )
+
+    await shop_channel.send(
+        embed=embed,
+        view=ShopView()
+    )
+
+    await interaction.response.send_message(
+        "✅ Shop embed sent.",
+        ephemeral=True
+    )
+
+# =========================
+# MEMBER LEAVE LOGS
+# =========================
+
+@bot.event
+async def on_member_remove(member):
+
+    # only track real members
+    member_role = member.guild.get_role(
+        MEMBER_ROLE_ID
+    )
+
+    if member_role not in member.roles:
+        return
+
+    # =========================
+    # DELETE USER DATA
+    # =========================
+
+    cursor.execute("""
+    DELETE FROM users
+    WHERE user_id = ?
+    """, (
+        member.id,
+    ))
+
+    conn.commit()
+
+    # =========================
+    # LOG CHANNEL
+    # =========================
+
+    log_channel = member.guild.get_channel(
+        1501471871781310507
+    )
+
+    if not log_channel:
+        return
+
+    # =========================
+    # LOG EMBED
+    # =========================
+
+    embed = discord.Embed(
+        title="📤 Member Left",
+        color=discord.Color.red(),
+        timestamp=discord.utils.utcnow()
+    )
+
+    embed.set_thumbnail(
+        url=member.display_avatar.url
+    )
+
+    embed.add_field(
+        name="User",
+        value=f"{member.mention}\n`{member.id}`",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Action",
+        value=(
+            "Their database data was deleted."
+        ),
+        inline=False
+    )
+
+    embed.set_footer(
+        text="Velorax Member Tracking"
+    )
+
+    await log_channel.send(
+        embed=embed
+    )
+
 
 # =========================
 # DELETE MESSAGES
@@ -4504,6 +6314,31 @@ async def on_message(message):
         warning = await message.channel.send(
             f"{message.author.mention} "
             f"You can only use `/create_quest` in this channel."
+        )
+
+        await asyncio.sleep(3)
+
+        try:
+            await warning.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # ACTIVE QUEST CHANNEL
+    # =========================
+
+    if message.channel.id == AVAILABLE_QUEST_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        warning = await message.channel.send(
+            f"{message.author.mention} "
+            f"You can only use `/available_tasks` in this channel."
         )
 
         await asyncio.sleep(3)
@@ -4659,43 +6494,21 @@ async def on_message(message):
         return
 
     # =========================
-    # CHECK QUEST EXPIRATION
+    # GET QUEST ID FROM THREAD
     # =========================
 
     cursor.execute("""
-    SELECT expires_at
+    SELECT quest_id
     FROM quests
     WHERE proof_thread_id = ?
     """, (message.channel.id,))
 
-    quest_expire_data = cursor.fetchone()
+    thread_quest = cursor.fetchone()
 
-    if not quest_expire_data:
+    if not thread_quest:
         return
 
-    expires_at = datetime.fromisoformat(
-        quest_expire_data[0]
-    )
-
-    if datetime.now(UTC) > expires_at:
-        await message.reply(
-            "❌ This quest has expired."
-        )
-
-        return
-
-    cursor.execute("""
-        SELECT quest_id
-        FROM quests
-        WHERE proof_thread_id = ?
-        """, (message.channel.id,))
-
-    quest = cursor.fetchone()
-
-    if not quest:
-        return
-
-    quest_id = quest[0]
+    quest_id = thread_quest[0]
 
     # =========================
     # DUPLICATE CHECK
@@ -4828,7 +6641,7 @@ async def on_message(message):
         VIP_APPROVAL_CHANNEL
     )
 
-    await approval_channel.send(
+    approval_message = await approval_channel.send(
         embed=embed,
         view=ApprovalView(
             message.author.id,
@@ -4836,6 +6649,99 @@ async def on_message(message):
             submission_id
         )
     )
+
+    # =========================
+    # SUBMISSION QUEUE LOG
+    # =========================
+
+    cursor.execute("""
+    SELECT
+        title,
+        current_claims,
+        max_claims,
+        message_id
+    FROM quests
+    WHERE quest_id = ?
+    """, (quest_id,))
+
+    quest_info = cursor.fetchone()
+
+    quest_title = quest_info[0]
+    current_claims = quest_info[1]
+    max_claims = quest_info[2]
+    quest_message_id = quest_info[3]
+
+    queue_channel = message.guild.get_channel(
+        SUBMISSION_QUEUE_CHANNEL
+    )
+
+    queue_embed = discord.Embed(
+        title="🕒 Paid Quest Submission Queue",
+        color=discord.Color.orange()
+    )
+
+    queue_embed.add_field(
+        name="Quest",
+        value=(
+            f"**Quest #{quest_id} - {quest_title}**\n"
+            f"[Jump to Quest]"
+            f"(https://discord.com/channels/"
+            f"{message.guild.id}/"
+            f"{PAID_QUEST_CHANNEL}/"
+            f"{quest_message_id})"
+        ),
+        inline=False
+    )
+
+    queue_embed.add_field(
+        name="Member",
+        value=message.author.mention,
+        inline=False
+    )
+
+    queue_embed.add_field(
+        name="Slots",
+        value=f"{current_claims}/{max_claims}",
+        inline=False
+    )
+
+    queue_embed.add_field(
+        name="Submission",
+        value=f"[View Submission]({approval_message.jump_url})",
+        inline=False
+    )
+
+    queue_embed.add_field(
+        name="Status",
+        value="🟡 Under Review",
+        inline=False
+    )
+
+    queue_embed.set_thumbnail(
+        url=message.author.display_avatar.url
+    )
+
+    queue_log_message = await queue_channel.send(
+        embed=queue_embed
+    )
+
+    # =========================
+    # SAVE MESSAGE IDS
+    # =========================
+
+    cursor.execute("""
+    UPDATE submissions
+    SET
+        approval_message_id = ?,
+        queue_message_id = ?
+    WHERE id = ?
+    """, (
+        approval_message.id,
+        queue_log_message.id,
+        submission_id
+    ))
+
+    conn.commit()
 
     await message.reply(
         "✅ Submission received and pending review."
