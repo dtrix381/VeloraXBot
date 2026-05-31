@@ -4103,7 +4103,12 @@ async def leaderboard(interaction: discord.Interaction):
         if not member:
             continue
 
+        # Must have member role
         if not any(role.id == MEMBER_ROLE_ID for role in member.roles):
+            continue
+
+        # Exclude admins
+        if any(role.id == ADMIN_ROLE_ID for role in member.roles):
             continue
 
         filtered_users.append(user)
@@ -4334,17 +4339,17 @@ class EngagementLeaderboardView(ui.View):
         )
 
 
-@bot.tree.command(name="engagement_leaderboard")
-async def engagement_leaderboard(interaction: discord.Interaction):
+@bot.tree.command(name="velorax_leaderboard")
+async def velorax_leaderboard(interaction: discord.Interaction):
     if interaction.channel.id != LEADERBOARD_CHANNEL:
-        engagement_leaderboard_channel = get_channel(
+        velorax_leaderboard_channel = get_channel(
             interaction.guild,
             LEADERBOARD_CHANNEL
         )
 
         channel_mention = (
-            engagement_leaderboard_channel.mention
-            if engagement_leaderboard_channel
+            velorax_leaderboard_channel.mention
+            if velorax_leaderboard_channel
             else f"#{LEADERBOARD_CHANNEL}"
         )
 
@@ -4383,7 +4388,12 @@ async def engagement_leaderboard(interaction: discord.Interaction):
         if not member:
             continue
 
+        # Must have member role
         if not any(role.id == MEMBER_ROLE_ID for role in member.roles):
+            continue
+
+        # Exclude admins
+        if any(role.id == ADMIN_ROLE_ID for role in member.roles):
             continue
 
         filtered_users.append(user)
@@ -4866,6 +4876,8 @@ async def create_quest(interaction: discord.Interaction):
                     # ADD CREATED QUEST COUNT
                     # =========================
 
+                    await confirm_interaction.response.defer(ephemeral=True)
+
                     velorax_reward = self.budget // 2
 
                     cursor.execute("""
@@ -5043,7 +5055,7 @@ async def create_quest(interaction: discord.Interaction):
                     # SUCCESS
                     # =========================
 
-                    await confirm_interaction.response.edit_message(
+                    await confirm_interaction.edit_original_response(
                         content=(
                             "✅ Quest created successfully.\n"
                             "20 Creator Points deducted."
@@ -7081,7 +7093,7 @@ async def on_message(message):
     if message.channel.id == LEADERBOARD_CHANNEL:
 
         allowed = [
-            "/engagement_leaderboard",
+            "/velorax_leaderboard",
         ]
 
         try:
@@ -7091,7 +7103,7 @@ async def on_message(message):
 
         warning = await message.channel.send(
             f"{message.author.mention} "
-            f"You can only use `/engagement_leaderboard` "
+            f"You can only use `/velorax_leaderboard` "
         )
 
         await asyncio.sleep(3)
@@ -7382,7 +7394,6 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
-
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
