@@ -3876,6 +3876,29 @@ async def profile(
         inline=True
     )
 
+    hosted_points = max(0, (velorax - engagements) * 2)
+
+    if hosted_points >= 300:
+
+        eligibility_text = (
+            f"✅ Eligible for Leaderboard Rewards\n"
+        )
+
+    else:
+
+        needed = 300 - hosted_points
+
+        eligibility_text = (
+            f"❌ Not Yet Eligible\n"
+            f"Need {needed} more Creator Points hosted in Quest"
+        )
+
+    embed.add_field(
+        name="Leaderboard Eligibility",
+        value=eligibility_text,
+        inline=False
+    )
+
     embed.add_field(
         name="X Profile",
         value=f"https://x.com/{x_username}",
@@ -4474,6 +4497,29 @@ async def velorax_leaderboard(interaction: discord.Interaction):
             embed.add_field(
                 name="Creator Points",
                 value=f":gem: {points}",
+                inline=False
+            )
+
+            hosted_points = max(0, (velorax - engagements) * 2)
+
+            if hosted_points >= 300:
+
+                eligibility_text = (
+                    f"✅ Eligible for Leaderboard Rewards\n"
+                )
+
+            else:
+
+                needed = 300 - hosted_points
+
+                eligibility_text = (
+                    f"❌ Not Yet Eligible\n"
+                    f"Need {needed} more Creator Points hosted in Quest"
+                )
+
+            embed.add_field(
+                name="Leaderboard Eligibility",
+                value=eligibility_text,
                 inline=False
             )
 
@@ -7394,6 +7440,8 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
+
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
+
