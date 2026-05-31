@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime, timedelta, UTC
 import re
 import os
+import math
 
 GUILD_OWNER_ID = 488015447417946151
 ADMIN_ROLE_ID = 1501472062903156756  # Team
@@ -18,6 +19,7 @@ SUPPORT_CATEGORY_ID = 1501483613529706528
 ADMIN_REVIEW_CHANNEL_ID = 1507604124366147735
 FIRST_OFFENSE_ROLE = 1507613554910433320
 SECOND_OFFENSE_ROLE = 1507613855587766302
+WAITING_ROOM_CHANNEL = 1510492366660833350
 
 CATEGORY_NAME = 1507640053315407904
 REGISTER_CHANNEL = 1507640055680733244
@@ -190,20 +192,32 @@ def get_user_rank(user_id):
 # APPROVAL CONFIRMATION VIEW
 # =========================
 class ApprovalConfirmView(ui.View):
-    def __init__(self, original_embed, original_view, new_member, inviter, original_username):
+
+    def __init__(
+        self,
+        original_embed,
+        original_view,
+        user_id,
+        inviter_id,
+        username
+    ):
         super().__init__(timeout=None)
+
         self.original_embed = original_embed
         self.original_view = original_view
-        self.new_member_id = new_member.id if new_member else None
-        self.inviter_id = inviter.id if inviter else None
-        self.original_username = original_username
-        self.ADMIN_ROLE_ID = 1501472062903156756
-        self.VERIFIED_ROLE_ID = 1501473138188353616
+
+        self.user_id = user_id
+        self.inviter_id = inviter_id
+        self.username = username
+        self.ADMIN_ROLE_ID = ADMIN_ROLE_ID
+        self.VERIFIED_ROLE_ID = MEMBER_ROLE_ID
 
     @ui.button(label="Yes", style=discord.ButtonStyle.success, custom_id="confirm_approve_yes")
     async def confirm_yes(self, interaction: discord.Interaction, button: ui.Button):
 
         guild = interaction.guild
+        member = interaction.guild.get_member(self.user_id)
+        inviter = interaction.guild.get_member(self.inviter_id)
         admin_role = interaction.guild.get_role(self.ADMIN_ROLE_ID)
         if admin_role not in interaction.user.roles:
             await interaction.response.send_message(
@@ -223,7 +237,7 @@ class ApprovalConfirmView(ui.View):
         # =========================
         try:
             verified_role = interaction.guild.get_role(self.VERIFIED_ROLE_ID)
-            member = interaction.guild.get_member(self.new_member_id)
+            member = interaction.guild.get_member(self.user_id)
 
             if verified_role and member:
                 await member.add_roles(
@@ -240,7 +254,7 @@ class ApprovalConfirmView(ui.View):
             UPDATE users
             SET points = COALESCE(points, 0) + 25
             WHERE user_id = ?
-        """, (self.new_member_id,))
+        """, (self.user_id,))
 
         # =========================
         # 3. GIVE GOLD TO INVITER (EXCEPT BOT)
@@ -265,7 +279,7 @@ class ApprovalConfirmView(ui.View):
             UPDATE invite_joins
             SET rewarded = 1
             WHERE invited_id = ?
-        """, (self.new_member_id,))
+        """, (self.user_id,))
 
         # =========================
         # 5. GET TOTAL GOLD (SAFE)
@@ -361,26 +375,11 @@ class ApprovalConfirmView(ui.View):
 # INITIAL REGISTRATION VIEW
 # =========================
 class CreatorReviewView(ui.View):
-    def __init__(
-            self,
-            original_username=None,
-            new_member=None,
-            inviter=None
-    ):
-        super().__init__(timeout=None)
-        self.original_username = original_username
-        self.new_member_id = new_member.id if new_member else None
-        self.inviter_id = inviter.id if inviter else None
-        self.ADMIN_ROLE_ID = 1501472062903156756
 
-        # Add the baseline profile button link immediately
-        if original_username:
-            self.add_item(
-                ui.Button(
-                    label="Review Profile",
-                    url=f"https://x.com/{original_username}"
-                )
-            )
+    def __init__(self, ):
+        super().__init__(timeout=None)
+
+        self.ADMIN_ROLE_ID = ADMIN_ROLE_ID
 
     @ui.button(label="Approved Creator", style=discord.ButtonStyle.primary, custom_id="trigger_approve_flow")
     async def approve_creator_click(self, interaction: discord.Interaction, button: ui.Button):
@@ -389,8 +388,26 @@ class CreatorReviewView(ui.View):
             await interaction.response.send_message("❌ Only Admins can click this button.", ephemeral=True)
             return
 
+        embed = interaction.message.embeds[0]
+
+        user_id = None
+        inviter_id = None
+        username = None
+
+        for field in embed.fields:
+
+            if field.name == "User ID":
+                user_id = int(field.value)
+
+            elif field.name == "Inviter ID":
+                inviter_id = int(field.value)
+
+            elif field.name == "Username":
+                username = field.value
+
         # Create confirmation screen overlay setup
-        member = interaction.guild.get_member(self.new_member_id)
+        member = interaction.guild.get_member(user_id)
+        inviter = interaction.guild.get_member(inviter_id)
 
         confirm_embed = discord.Embed(
             title="⚠️ Action Confirmation Required",
@@ -401,12 +418,38 @@ class CreatorReviewView(ui.View):
         confirm_view = ApprovalConfirmView(
             original_embed=interaction.message.embeds[0],
             original_view=self,
-            new_member=interaction.guild.get_member(self.new_member_id),
-            inviter=interaction.guild.get_member(self.inviter_id),
-            original_username=self.original_username
+            user_id=user_id,
+            inviter_id=inviter_id,
+            username=username
         )
 
-        await interaction.response.edit_message(embed=confirm_embed, view=confirm_view)
+        await interaction.response.edit_message(
+            embed=confirm_embed,
+            view=confirm_view
+        )
+
+    @ui.button(label="Reject Creator", style=discord.ButtonStyle.danger, custom_id="reject_creator")
+    async def reject_creator(self, interaction: discord.Interaction, button: ui.Button):
+        admin_role = interaction.guild.get_role(ADMIN_ROLE_ID)
+        if admin_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ Only Admins can do this.", ephemeral=True)
+            return
+
+        embed = interaction.message.embeds[0]
+
+        user_id = None
+
+        for field in embed.fields:
+
+            if field.name == "User ID":
+                user_id = int(field.value)
+
+        await interaction.response.send_modal(
+            RejectCreatorModal(
+                user_id,
+                interaction.message
+            )
+        )
 
 
 # =========================
@@ -588,7 +631,7 @@ class XModal(ui.Modal, title="Connect Your X"):
 
                 embed.add_field(
                     name="Invited By",
-                    value=inviter.mention if hasattr(inviter, "mention") else str(inviter),
+                    value=inviter.mention,
                     inline=False
                 )
 
@@ -598,11 +641,25 @@ class XModal(ui.Modal, title="Connect Your X"):
                     inline=False
                 )
 
-                view = CreatorReviewView(
-                    original_username,
-                    interaction.user,
-                    inviter
+                embed.add_field(
+                    name="User ID",
+                    value=str(interaction.user.id),
+                    inline=False
                 )
+
+                embed.add_field(
+                    name="Inviter ID",
+                    value=str(inviter.id),
+                    inline=False
+                )
+
+                embed.add_field(
+                    name="Username",
+                    value=original_username,
+                    inline=False
+                )
+
+                view = CreatorReviewView()
 
                 await approval_channel.send(embed=embed, view=view)
 
@@ -693,6 +750,58 @@ class InviteApprovalView(ui.View):
 
         await interaction.response.send_message("Rejected.", ephemeral=True)
 
+class RejectCreatorModal(ui.Modal):
+
+    def __init__(self, user_id, message):
+        super().__init__(title="Reject Creator")
+        self.user_id = user_id
+        self.message = message
+
+        self.reason = ui.TextInput(
+            label="Reason",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=500
+        )
+
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction):
+
+        await interaction.response.defer(ephemeral=True)
+
+        member = interaction.guild.get_member(
+            self.user_id
+        )
+
+        cursor.execute("""
+        DELETE FROM users
+        WHERE user_id = ?
+        """, (self.user_id,))
+
+        conn.commit()
+
+        waiting_room = interaction.guild.get_channel(
+            WAITING_ROOM_CHANNEL
+        )
+
+        await waiting_room.send(
+            f"{member.mention}\n\n"
+            f"❌ Your creator application has been denied for now.\n\n"
+            f"Reason: {self.reason}\n\n"
+            f"👮 Denied By: {interaction.user.mention}\n\n"
+            f"You may update your X account and apply again once it meets our requirements."
+        )
+
+        try:
+            await self.message.delete()
+        except:
+            pass
+
+        await interaction.followup.send(
+            "❌ Creator application rejected.",
+            ephemeral=True
+        )
 
 # =========================
 # REGISTER BUTTON
@@ -2360,6 +2469,8 @@ async def load_persistent_views():
     bot.add_view(CloseTicketView())
     bot.add_view(ClosedTicketView())
     bot.add_view(CreatorReviewView())
+    bot.add_view(ReportReviewView())
+    bot.add_view(PayoutConfirmView())
 
     print("All persistent views loaded.")
 
@@ -2492,7 +2603,8 @@ class CommunityQuestView(ui.View):
         UPDATE users
         SET
             points = COALESCE(points, 0) + 1,
-            engagements = COALESCE(engagements, 0) + 1
+            engagements = COALESCE(engagements, 0) + 1,
+            velorax = COALESCE(velorax,0) + 1
         WHERE user_id = ?
         """, (interaction.user.id,))
 
@@ -2567,7 +2679,10 @@ class CommunityQuestView(ui.View):
 
             live_embed.add_field(
                 name="Reward",
-                value=":gem: +1 Creator Point Per Claim",
+                value=(
+                    ":gem: +1 Creator Points\n"
+                    ":star2: +1 Velorax"
+                ),
                 inline=False
             )
 
@@ -2723,6 +2838,8 @@ class CommunityQuestView(ui.View):
                 # EDIT ORIGINAL QUEST MESSAGE
                 # =========================
 
+                creator_velorax = updated_max // 2
+
                 completed_embed_main = discord.Embed(
                     title=f"Quest #{self.quest_id} - {quest_title}",
                     color=discord.Color.dark_grey()
@@ -2754,8 +2871,11 @@ class CommunityQuestView(ui.View):
                 )
 
                 completed_embed_main.add_field(
-                    name="Reward",
-                    value=":gem: +1 Creator Point",
+                    name="Creator Reward",
+                    value=(
+                        f"Spent {updated_max} Creator Points\n"
+                        f"Earned +{creator_velorax} Velorax"
+                    ),
                     inline=False
                 )
 
@@ -2814,7 +2934,7 @@ class CommunityQuestView(ui.View):
         # =========================
 
         cursor.execute("""
-        SELECT points
+        SELECT points, velorax, engagements
         FROM users
         WHERE user_id = ?
         """, (interaction.user.id,))
@@ -2822,6 +2942,8 @@ class CommunityQuestView(ui.View):
         result = cursor.fetchone()
 
         total_points = result[0] if result else 0
+        total_velorax = result[1] if result else 0
+        total_engagements = result[2] if result else 0
 
         conn.commit()
 
@@ -2835,13 +2957,19 @@ class CommunityQuestView(ui.View):
             await log_channel.send(
                 f"**Quest Claimed**\n\n"
                 f"**Member:** {interaction.user.mention}\n"
-                f"**Quest:** {self.quest_title}\n"
-                f"**Reward:** :gem: +1 **Creator Point**\n"
-                f"**Total Creator Points:** :gem: {total_points}"
+                f"**Quest:** {self.quest_title}\n\n"
+                f"**Rewards:**\n"
+                f"+1 Creator Points\n"
+                f"+1 Velorax\n\n"
+                f"**Totals:**\n"
+                f"💎 Creator Points: {total_points}\n"
+                f":star2:  Velorax: {total_velorax}"
             )
 
         await interaction.followup.send(
-            "✅ You successfully claimed :gem: +1 Creator Point.",
+            "✅ Quest claimed!\n\n"
+            "💎 +1 Creator Points\n"
+            ":star2: +1 Velorax",
             ephemeral=True
         )
 
@@ -3660,7 +3788,7 @@ async def profile(
         return
 
     cursor.execute("""
-    SELECT x_username, points, gold_points, quests_completed, quests_denied, engagements, quests_created
+    SELECT x_username, points, gold_points, quests_completed, quests_denied, engagements, quests_created, velorax
     FROM users
     WHERE user_id = ?
     """, (member.id,))
@@ -3693,7 +3821,7 @@ async def profile(
 
         return
 
-    x_username, points, gold_points, completed, denied, engagements, quests_created = data
+    x_username, points, gold_points, completed, denied, engagements, quests_created, velorax = data
 
     rank = get_user_rank(member.id)
 
@@ -3709,6 +3837,12 @@ async def profile(
     embed.add_field(
         name="Gold Points",
         value=f":moneybag: {gold_points}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Velorax",
+        value=f":star2: {velorax}",
         inline=False
     )
 
@@ -3945,10 +4079,11 @@ async def leaderboard(interaction: discord.Interaction):
     # =========================
 
     cursor.execute("""
-    SELECT user_id, x_username, points, gold_points, quests_completed, quests_denied, engagements
+    SELECT user_id, x_username, points, gold_points, quests_completed, quests_denied, engagements, velorax
     FROM users
     ORDER BY gold_points DESC,
              quests_completed DESC,
+             velorax DESC,
              engagements DESC,
              points DESC,
              quests_denied ASC
@@ -4004,7 +4139,8 @@ async def leaderboard(interaction: discord.Interaction):
                 gold_points,
                 completed,
                 denied,
-                engagements
+                engagements,
+                velorax
         ) in enumerate(chunk, start=i + 1):
 
             member = interaction.guild.get_member(
@@ -4032,6 +4168,12 @@ async def leaderboard(interaction: discord.Interaction):
             embed.add_field(
                 name="Gold Points",
                 value=f":moneybag: {gold_points}",
+                inline=False
+            )
+
+            embed.add_field(
+                name="Velorax",
+                value=f":star2: {velorax}",
                 inline=False
             )
 
@@ -4219,9 +4361,10 @@ async def engagement_leaderboard(interaction: discord.Interaction):
     # =========================
 
     cursor.execute("""
-    SELECT user_id, x_username, points, engagements, quests_created
+    SELECT user_id, x_username, points, engagements, quests_created, velorax
     FROM users
-    ORDER BY engagements DESC,
+    ORDER BY velorax DESC,
+             engagements DESC,
              quests_created DESC,
              points DESC
     """)
@@ -4274,7 +4417,8 @@ async def engagement_leaderboard(interaction: discord.Interaction):
                 x_username,
                 points,
                 engagements,
-                quests_created
+                quests_created,
+                velorax
         ) in enumerate(chunk, start=i + 1):
 
             member = interaction.guild.get_member(
@@ -4296,6 +4440,12 @@ async def engagement_leaderboard(interaction: discord.Interaction):
             embed.add_field(
                 name="",
                 value=member.mention,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Velorax",
+                value=f":star2: {velorax}",
                 inline=False
             )
 
@@ -4571,13 +4721,15 @@ async def create_quest(interaction: discord.Interaction):
             self.add_item(self.tweet_link)
 
             self.point_budget = ui.TextInput(
-                label="How Many Creator Points To Spend",
-                placeholder="Minimum 10 Creator Points",
+                label="Creator Points To Spend",
+                placeholder="20,30,40,50,60,70,80,90,100",
                 required=True,
                 max_length=3
             )
 
             self.add_item(self.point_budget)
+
+
 
         async def on_submit(
                 self,
@@ -4620,6 +4772,20 @@ async def create_quest(interaction: discord.Interaction):
                 )
                 return
 
+            budget = int(str(self.point_budget))
+
+            allowed_budgets = [
+                20, 30, 40, 50, 60,
+                70, 80, 90, 100
+            ]
+
+            if budget not in allowed_budgets:
+                await modal_interaction.response.send_message(
+                    "❌ Budget must be 20,30,40,50,60,70,80,90 or 100.",
+                    ephemeral=True
+                )
+                return
+
             if budget <= 0:
                 await modal_interaction.response.send_message(
                     "❌ Minimum Creator Point budget is :gem: 10.",
@@ -4629,7 +4795,9 @@ async def create_quest(interaction: discord.Interaction):
 
             if current_points < budget:
                 await modal_interaction.response.send_message(
-                    f"❌ You only have :gem: {current_points} Creator Points.",
+                    f"❌ Insufficient Creator Points.\n\n"
+                    f"💎 Current: {current_points}\n"
+                    f"💎 Required: {budget}",
                     ephemeral=True
                 )
                 return
@@ -4682,7 +4850,7 @@ async def create_quest(interaction: discord.Interaction):
                     self.submitted_link = submitted_link
                     self.budget = budget
                     self.modal_interaction = modal_interaction
-                    self.confirm.label = f"Run Quest (-{budget} Points)"
+                    self.confirm.label = f"Run Quest (:gem: -{budget} Creator Points)"
 
                 @ui.button(
                     label="Run Quest",
@@ -4698,14 +4866,19 @@ async def create_quest(interaction: discord.Interaction):
                     # ADD CREATED QUEST COUNT
                     # =========================
 
+                    velorax_reward = self.budget // 2
+
                     cursor.execute("""
                     UPDATE users
                     SET
-                        points = COALESCE(points, 0) - ?,
-                        quests_created = COALESCE(quests_created, 0) + 1
+                        points = COALESCE(points,0) - ?,
+                        quests_created = COALESCE(quests_created,0) + 1,
+                        velorax = COALESCE(velorax,0) + ?
                     WHERE user_id = ?
                     """, (
-                        self.budget, self.modal_interaction.user.id,
+                        self.budget,
+                        velorax_reward,
+                        self.modal_interaction.user.id
                     ))
 
                     created_at = datetime.now(UTC)
@@ -4861,7 +5034,8 @@ async def create_quest(interaction: discord.Interaction):
                             f"**Creator Quest Created**\n\n"
                             f"**Creator:** {self.modal_interaction.user.mention}\n"
                             f"**Quest:** {self.quest_title}\n"
-                            f"**Cost:** :gem: -{self.budget} **Creator Points**\n"
+                            f"**Spent:** :gem: -{self.budget} **Creator Points**\n"
+                            f"**Earned:** {velorax_reward} Velorax\n"
                             f"**Total Creator Points:** :gem: {total_points}"
                         )
 
@@ -5025,7 +5199,7 @@ class ConfirmExchangeView(ui.View):
 
     def __init__(self, gold_cost, exchange_reward):
 
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
 
         self.gold_cost = gold_cost
         self.exchange_reward = exchange_reward
@@ -5107,7 +5281,11 @@ class ConfirmExchangeView(ui.View):
         )
 
         await support_channel.edit(
-            topic=f"user_id:{confirm_interaction.user.id}"
+            topic=(
+                f"user_id:{confirm_interaction.user.id}|"
+                f"gold:{self.gold_cost}|"
+                f"reward:{self.exchange_reward}"
+            )
         )
 
         # =========================
@@ -5159,6 +5337,11 @@ class ConfirmExchangeView(ui.View):
             GOLD_LOGS_CHANNEL
         )
 
+        print("GOLD_LOGS_CHANNEL =", GOLD_LOGS_CHANNEL)
+
+        log_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
+
+        print("FOUND CHANNEL =", log_channel)
         if log_channel:
 
             cursor.execute("""
@@ -5206,7 +5389,13 @@ class ClosedTicketView(ui.View):
         if not topic:
             return await interaction.response.send_message("Missing ticket data.", ephemeral=True)
 
-        user_id = int(topic.split(":")[1])
+        parts = {}
+
+        for item in topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        user_id = int(parts["user_id"])
         user = interaction.guild.get_member(user_id)
 
         if not user:
@@ -5230,7 +5419,7 @@ class ClosedTicketView(ui.View):
         # 🧹 DELETE THE BUTTON MESSAGE
         await interaction.message.delete()
 
-        await interaction.response.send_message("Reopened.", ephemeral=True)
+        await interaction.followup.send("Reopened.", ephemeral=True)
 
     @ui.button(
         label="Delete Ticket",
@@ -5316,7 +5505,7 @@ class ConfirmCloseView(ui.View):
                 ),
                 color=discord.Color.red()
             ),
-            view=ClosedTicketView(self.user_id)
+            view=ClosedTicketView()
         )
 
     @ui.button(
@@ -5353,7 +5542,13 @@ class CloseTicketView(ui.View):
         if not topic or "user_id:" not in topic:
             return await interaction.response.send_message("Missing ticket data.", ephemeral=True)
 
-        user_id = int(topic.split(":")[1])
+        parts = {}
+
+        for item in topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        user_id = int(parts["user_id"])
         user = interaction.guild.get_member(user_id)
 
         member_role = interaction.guild.get_role(MEMBER_ROLE_ID)
@@ -5389,7 +5584,16 @@ class CloseTicketView(ui.View):
             )
 
         topic = interaction.channel.topic
-        user_id = int(topic.split(":")[1])
+
+        parts = {}
+
+        for item in topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        user_id = int(parts["user_id"])
+        gold_cost = int(parts["gold"])
+        exchange_reward = parts["reward"]
         user = interaction.guild.get_member(user_id)
 
         if not user:
@@ -5404,7 +5608,15 @@ class CloseTicketView(ui.View):
             color=0x2ECC71
         )
 
-        view = PayoutConfirmView(user.id, interaction.user.id)
+        await interaction.channel.edit(
+            topic=(
+                f"user_id:{user_id}|"
+                f"gold:{gold_cost}|"
+                f"reward:{exchange_reward}|"
+                f"admin:{interaction.user.id}"
+            )
+        )
+        view = PayoutConfirmView()
 
         await interaction.response.send_message(
             content=user.mention,
@@ -5415,22 +5627,43 @@ class CloseTicketView(ui.View):
 
 class PayoutConfirmView(ui.View):
 
-    def __init__(self, user_id: int, admin_id: int):
-        super().__init__(timeout=300)
-        self.user_id = user_id
-        self.admin_id = admin_id
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    @ui.button(label="✅ I Received It", style=discord.ButtonStyle.green)
+    @ui.button(
+        label="✅ I Received It",
+        style=discord.ButtonStyle.green,
+        custom_id="exchange_received"
+    )
     async def yes(self, interaction: discord.Interaction, button: ui.Button):
 
-        if interaction.user.id != self.user_id:
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        user_id = int(parts["user_id"])
+
+        if interaction.user.id != user_id:
             return await interaction.response.send_message(
                 "Only the exchange user can confirm.",
                 ephemeral=True
             )
 
         guild = interaction.guild
-        admin = guild.get_member(self.admin_id)
+
+        admin_id = int(parts["admin"])
+        admin = guild.get_member(admin_id)
+
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        gold_cost = int(parts["gold"])
+        exchange_reward = parts["reward"]
 
         # ticket channel
         await interaction.channel.send(
@@ -5457,13 +5690,13 @@ class PayoutConfirmView(ui.View):
 
             embed.add_field(
                 name="Exchange",
-                value=f"{self.gold_cost} Gold Points",
+                value=f"{gold_cost} Gold Points",
                 inline=True
             )
 
             embed.add_field(
                 name="Received",
-                value=f"{cash_amount}",
+                value=exchange_reward,
                 inline=True
             )
 
@@ -5484,10 +5717,22 @@ class PayoutConfirmView(ui.View):
             view=None
         )
 
-    @ui.button(label="❌ Not Yet", style=discord.ButtonStyle.red)
+    @ui.button(
+        label="❌ Not Yet",
+        style=discord.ButtonStyle.red,
+        custom_id="exchange_not_received"
+    )
     async def no(self, interaction: discord.Interaction, button: ui.Button):
 
-        if interaction.user.id != self.user_id:
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        user_id = int(parts["user_id"])
+
+        if interaction.user.id != user_id:
             return await interaction.response.send_message(
                 "Only the exchange user can respond.",
                 ephemeral=True
@@ -5687,7 +5932,7 @@ async def report(interaction: discord.Interaction, user: discord.Member):
 class ReportPublishView(ui.View):
 
     def __init__(self, creator_id, tweet, reported):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.creator_id = creator_id
         self.tweet = tweet
         self.reported = reported
@@ -5722,16 +5967,36 @@ class ReportPublishView(ui.View):
         msg = await report_channel.send(embed=embed)
 
         # send to admin review channel
-        admin_channel = interaction.guild.get_channel(ADMIN_REVIEW_CHANNEL_ID)
+        admin_channel = interaction.guild.get_channel(
+            ADMIN_REVIEW_CHANNEL_ID
+        )
+
+        # =========================
+        # PERSISTENT DATA
+        # =========================
+
+        embed.add_field(
+            name="Reported ID",
+            value=str(self.reported),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Reporter ID",
+            value=str(self.creator_id),
+            inline=False
+        )
+
+        embed.add_field(
+            name="Report Message ID",
+            value=str(msg.id),
+            inline=False
+        )
 
         if admin_channel:
             await admin_channel.send(
                 embed=embed,
-                view=ReportReviewView(
-                    int(self.reported),
-                    self.creator_id,
-                    msg.id
-                )
+                view=ReportReviewView()
             )
 
         await interaction.response.edit_message(
@@ -5750,22 +6015,70 @@ class ReportPublishView(ui.View):
 
 class ReportReviewView(ui.View):
 
-    def __init__(self, reported_user: int, reporter_id: int, report_msg_id: int):
-        super().__init__(timeout=300)
-        self.reported_user = reported_user
-        self.reporter_id = reporter_id
-        self.report_msg_id = report_msg_id
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    @ui.button(label="📎 Raid Link", style=discord.ButtonStyle.secondary)
+    @ui.button(
+        label="📎 Raid Link",
+        style=discord.ButtonStyle.secondary,
+        custom_id="report_raid_link"
+    )
     async def raid(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.send_message("Raid link action placeholder", ephemeral=True)
 
-    @ui.button(label="❌ Let Go", style=discord.ButtonStyle.success)
+        embed = interaction.message.embeds[0]
+
+        reported_user = None
+        reporter_id = None
+        report_msg_id = None
+        raid_link = None
+
+        for field in embed.fields:
+
+            if field.name == "Reported ID":
+                reported_user = int(field.value)
+
+            elif field.name == "Reporter ID":
+                reporter_id = int(field.value)
+
+            elif field.name == "Report Message ID":
+                report_msg_id = int(field.value)
+
+            elif field.name == "Raid Link":
+                raid_link = field.value
+
+    @ui.button(
+        label="❌ Let Go",
+        style=discord.ButtonStyle.success,
+        custom_id="report_let_go"
+    )
     async def let_go(self, interaction: discord.Interaction, button: ui.Button):
+
+        embed = interaction.message.embeds[0]
+
+        reported_user = None
+        reporter_id = None
+        report_msg_id = None
+        raid_link = None
+
+        for field in embed.fields:
+
+            if field.name == "Reported ID":
+                reported_user = int(field.value)
+
+            elif field.name == "Reporter ID":
+                reporter_id = int(field.value)
+
+            elif field.name == "Report Message ID":
+                report_msg_id = int(field.value)
+
+            elif field.name == "Raid Link":
+                raid_link = field.value
 
         guild = interaction.guild
 
-        member = guild.get_member(self.reported_user)
+        member = guild.get_member(reported_user)
+        reporter = guild.get_member(reporter_id)
 
         report_channel = guild.get_channel(REPORT_CHANNEL)
 
@@ -5776,7 +6089,7 @@ class ReportReviewView(ui.View):
 
             try:
                 original = await report_channel.fetch_message(
-                    self.report_msg_id
+                    report_msg_id
                 )
 
                 embed = discord.Embed(
@@ -5791,6 +6104,16 @@ class ReportReviewView(ui.View):
                 embed.add_field(
                     name="👤 Reported User",
                     value=member.mention,
+                    inline=True
+                )
+
+                embed.add_field(
+                    name="📝 Reporter",
+                    value=(
+                        reporter.mention
+                        if reporter
+                        else f"<@{reporter_id}>"
+                    ),
                     inline=True
                 )
 
@@ -5822,12 +6145,38 @@ class ReportReviewView(ui.View):
             ephemeral=True
         )
 
-    @ui.button(label="⚠️ Penalize", style=discord.ButtonStyle.danger)
+    @ui.button(
+        label="⚠️ Penalize",
+        style=discord.ButtonStyle.danger,
+        custom_id="report_penalize"
+    )
     async def penalize(self, interaction: discord.Interaction, button: ui.Button):
+
+        await interaction.response.defer(ephemeral=True)
+        embed = interaction.message.embeds[0]
+
+        reported_user = None
+        reporter_id = None
+        report_msg_id = None
+        raid_link = None
+
+        for field in embed.fields:
+
+            if field.name == "Reported ID":
+                reported_user = int(field.value)
+
+            elif field.name == "Reporter ID":
+                reporter_id = int(field.value)
+
+            elif field.name == "Report Message ID":
+                report_msg_id = int(field.value)
+
+            elif field.name == "Raid Link":
+                raid_link = field.value
 
         guild = interaction.guild
 
-        member = guild.get_member(self.reported_user)
+        member = guild.get_member(reported_user)
 
         if not member:
             return await interaction.response.send_message(
@@ -5841,10 +6190,17 @@ class ReportReviewView(ui.View):
         report_channel = guild.get_channel(REPORT_CHANNEL)
 
         admin = interaction.user
+        reporter = guild.get_member(reporter_id)
 
         # =========================
         # OFFENSE SYSTEM
         # =========================
+
+        if reporter_id == member.id:
+            return await interaction.response.send_message(
+                "Invalid report.",
+                ephemeral=True
+            )
 
         if first_role not in member.roles:
 
@@ -5857,9 +6213,40 @@ class ReportReviewView(ui.View):
             cursor.execute("""
             UPDATE users
             SET
-                points = COALESCE(points, 0) - 2
+                points = COALESCE(points,0) - 2,
+                velorax = COALESCE(velorax,0) - 1
             WHERE user_id = ?
             """, (member.id,))
+
+            cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points,0) + 2,
+                velorax = COALESCE(velorax,0) + 1
+            WHERE user_id = ?
+            """, (reporter_id,))
+
+            reporter_reward = 2
+
+            cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+            """, (member.id,))
+            reported_stats = cursor.fetchone()
+
+            reported_points = reported_stats[0] if reported_stats else 0
+            reported_velorax = reported_stats[1] if reported_stats else 0
+
+            cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+            """, (reporter_id,))
+            reporter_stats = cursor.fetchone()
+
+            reporter_points = reporter_stats[0] if reporter_stats else 0
+            reporter_velorax = reporter_stats[1] if reporter_stats else 0
 
             conn.commit()
 
@@ -5885,11 +6272,27 @@ class ReportReviewView(ui.View):
                 )
 
                 await logs_channel.send(
-                    f"⚠️ {member.mention} received a "
-                    f"**First Offense** penalty.\n\n"
-                    f"📉 Deducted: -2 Creator Points\n"
-                    f"👮 Reviewed By: {admin.mention}\n"
-                    f"💎 Total Creator Points: {total_points}"
+                    f"⚠️ REPORT PENALIZED\n\n"
+
+                    f"👤 Reported User: {member.mention}\n"
+                    f"📝 Reporter: {reporter.mention if reporter else f'<@{reporter_id}>'}\n"
+                    f"👮 Reviewed By: {admin.mention}\n\n"
+
+                    f"📉 Reported User Lost:\n"
+                    f"• -2 Creator Points\n"
+                    f"• -1 Velorax\n\n"
+
+                    f"🎁 Reporter Earned:\n"
+                    f"• +2 Creator Points\n"
+                    f"• +1 Velorax\n\n"
+
+                    f"💎 Reported User Totals:\n"
+                    f"• Creator Points: {reported_points}\n"
+                    f"• Velorax: {reported_velorax}\n\n"
+
+                    f"💰 Reporter Totals:\n"
+                    f"• Creator Points: {reporter_points}\n"
+                    f"• Velorax: {reporter_velorax}"
                 )
 
             status = "First Offense"
@@ -5907,9 +6310,40 @@ class ReportReviewView(ui.View):
             cursor.execute("""
             UPDATE users
             SET
-                points = COALESCE(points, 0) - 5
+                points = COALESCE(points,0) - 5,
+                velorax = COALESCE(velorax,0) - 1
             WHERE user_id = ?
             """, (member.id,))
+
+            cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points,0) + 5,
+                velorax = COALESCE(velorax,0) + 1
+            WHERE user_id = ?
+            """, (reporter_id,))
+
+            reporter_reward = 5
+
+            cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+            """, (member.id,))
+            reported_stats = cursor.fetchone()
+
+            reported_points = reported_stats[0] if reported_stats else 0
+            reported_velorax = reported_stats[1] if reported_stats else 0
+
+            cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+            """, (reporter_id,))
+            reporter_stats = cursor.fetchone()
+
+            reporter_points = reporter_stats[0] if reporter_stats else 0
+            reporter_velorax = reporter_stats[1] if reporter_stats else 0
 
             conn.commit()
 
@@ -5935,20 +6369,63 @@ class ReportReviewView(ui.View):
                 )
 
                 await logs_channel.send(
-                    f"⚠️ {member.mention} received a "
-                    f"**Second Offense** penalty.\n\n"
-                    f"📉 Deducted: -5 Creator Points\n"
-                    f"👮 Reviewed By: {admin.mention}\n"
-                    f"💎 Total Creator Points: {total_points}"
+                    f"⚠️ REPORT PENALIZED\n\n"
+
+                    f"👤 Reported User: {member.mention}\n"
+                    f"📝 Reporter: {reporter.mention if reporter else f'<@{reporter_id}>'}\n"
+                    f"👮 Reviewed By: {admin.mention}\n\n"
+
+                    f"{member.mention} Lost:\n"
+                    f"• -5 Creator Points\n"
+                    f"• -1 Velorax\n\n"
+
+                    f"{reporter.mention} Earned:\n"
+                    f"• +5 Creator Points\n"
+                    f"• +1 Velorax\n\n"
+
+                    f"{member.mention} Totals:\n"
+                    f"• Creator Points: {reported_points}\n"
+                    f"• Velorax: {reported_velorax}\n\n"
+
+                    f"{reporter.mention} Totals:\n"
+                    f"• Creator Points: {reporter_points}\n"
+                    f"• Velorax: {reporter_velorax}"
                 )
 
             status = "Second Offense"
             remaining = 1
-            deduction = 2
+            deduction = 5
 
         else:
 
+            cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points,0) + 10,
+                velorax = COALESCE(velorax,0) + 1
+            WHERE user_id = ?
+            """, (reporter_id,))
+
+            cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+            """, (reporter_id,))
+            reporter_stats = cursor.fetchone()
+
+            reporter_points = reporter_stats[0] if reporter_stats else 0
+            reporter_velorax = reporter_stats[1] if reporter_stats else 0
+
+            cursor.execute("""
+            DELETE FROM users
+            WHERE user_id = ?
+            """, (member.id,))
+
+            conn.commit()
+
             await member.ban(reason="3rd offense reached")
+
+            reporter_reward = 10
 
             await logs_channel.send(
                 f"🔨 {member.mention} was permanently banned.\n\n"
@@ -5959,6 +6436,7 @@ class ReportReviewView(ui.View):
             status = "BANNED"
             remaining = 0
             deduction = "Banned"
+
 
         # =========================
         # DELETE ADMIN REVIEW
@@ -5974,7 +6452,7 @@ class ReportReviewView(ui.View):
 
             try:
                 original = await report_channel.fetch_message(
-                    self.report_msg_id
+                    report_msg_id
                 )
 
                 embed = discord.Embed(
@@ -6000,6 +6478,12 @@ class ReportReviewView(ui.View):
                 )
 
                 embed.add_field(
+                    name="📝 Reporter",
+                    value=reporter.mention,
+                    inline=False
+                )
+
+                embed.add_field(
                     name="⚠️ Penalty",
                     value=status,
                     inline=False
@@ -6014,6 +6498,37 @@ class ReportReviewView(ui.View):
                     ),
                     inline=False
                 )
+
+                embed.add_field(
+                    name="🎁 Reporter Reward",
+                    value=(
+                        f"{reporter.mention if reporter else f'<@{reporter_id}>'}\n"
+                        f"+{reporter_reward} Creator Points\n"
+                        f"+1 Velorax"
+                    ),
+                    inline=False
+                )
+
+                embed.add_field(
+                    name="💰 Reporter Totals",
+                    value=(
+                        f"{reporter.mention if reporter else f'<@{reporter_id}>'}\n"
+                        f"Creator Points: {reporter_points}\n"
+                        f"Velorax: {reporter_velorax}"
+                    ),
+                    inline=False
+                )
+
+                embed.add_field(
+                    name="💎 Reported User Totals",
+                    value=(
+                        f"{member.mention}\n"
+                        f"Creator Points: {reported_points}\n"
+                        f"Velorax: {reported_velorax}"
+                    ),
+                    inline=False
+                )
+
                 embed.add_field(
                     name="📌 Remaining Before Ban",
                     value=str(remaining),
@@ -6031,7 +6546,7 @@ class ReportReviewView(ui.View):
             except:
                 pass
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Penalty applied.",
             ephemeral=True
         )
@@ -6138,6 +6653,76 @@ async def send_shop(interaction: discord.Interaction):
 
     await interaction.response.send_message(
         "✅ Shop embed sent.",
+        ephemeral=True
+    )
+
+
+# =========================
+# CLEAR CHANNEL
+# =========================
+
+class ClearChannelConfirmView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=60)
+
+    @discord.ui.button(
+        label="✅ Yes Clear",
+        style=discord.ButtonStyle.red
+    )
+    async def confirm_clear(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        if interaction.user.id != GUILD_OWNER_ID:
+            return await interaction.response.send_message(
+                "Owner only.",
+                ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            "🧹 Clearing channel...",
+            ephemeral=True
+        )
+
+        deleted = await interaction.channel.purge(limit=None)
+
+        await interaction.channel.send(
+            f"✅ Channel cleared.\nDeleted {len(deleted)} messages."
+        )
+
+    @discord.ui.button(
+        label="❌ Cancel",
+        style=discord.ButtonStyle.gray
+    )
+    async def cancel_clear(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        await interaction.response.edit_message(
+            content="Cancelled.",
+            view=None
+        )
+
+@bot.tree.command(
+    name="clear_channel",
+    description="Clear all messages in current channel"
+)
+async def clear_channel(interaction: discord.Interaction):
+
+    if interaction.user.id != GUILD_OWNER_ID:
+        return await interaction.response.send_message(
+            "Owner only.",
+            ephemeral=True
+        )
+
+    await interaction.response.send_message(
+        "⚠️ Are you sure you want to clear ALL messages in this channel?",
+        view=ClearChannelConfirmView(),
         ephemeral=True
     )
 
