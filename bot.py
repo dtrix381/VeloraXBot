@@ -8,6 +8,7 @@ import re
 import os
 import math
 
+GUILD_ID = 1501471671360553131
 GUILD_OWNER_ID = 488015447417946151
 ADMIN_ROLE_ID = 1501472062903156756  # Team
 MEMBER_ROLE_ID = 1501473138188353616  # Creator
@@ -20,6 +21,7 @@ ADMIN_REVIEW_CHANNEL_ID = 1507604124366147735
 FIRST_OFFENSE_ROLE = 1507613554910433320
 SECOND_OFFENSE_ROLE = 1507613855587766302
 WAITING_ROOM_CHANNEL = 1510492366660833350
+ADMIN_LOG_CHANNEL = 1501476619641163927
 
 CATEGORY_NAME = 1507640053315407904
 REGISTER_CHANNEL = 1507640055680733244
@@ -40,6 +42,7 @@ GOLD_LEADERBOARD_CHANNEL = 1507640098521481236
 SHOP_CHANNEL = 1507640118616391802
 APPROVAL_CHANNEL = 1507640094951997460
 
+ADMIN_DAILY_CREATOR_POINTS = 50
 EXCHANGE_GOLD_COST = 100
 EXCHANGE_REWARD = "$10"
 EXCHANGE_OPTIONS = {
@@ -3767,6 +3770,11 @@ async def update_quests():
             except:
                 pass
 
+@tasks.loop(hours=24)
+async def admin_creator_points_loop():
+
+    await give_admin_creator_points()
+
 @bot.tree.command(name="profile")
 @app_commands.describe(member="Select member")
 async def profile(
@@ -6610,6 +6618,117 @@ class ReportReviewView(ui.View):
         )
 
 
+async def give_admin_creator_points():
+
+    guild = bot.get_guild(GUILD_ID)
+
+    if not guild:
+        return
+
+    admin_role = guild.get_role(ADMIN_ROLE_ID)
+
+    if not admin_role:
+        return
+
+    rewarded_users = []
+
+    now = datetime.now(UTC)
+
+    for member in admin_role.members:
+
+        cursor.execute("""
+        SELECT last_reward
+        FROM admin_daily_rewards
+        WHERE user_id = ?
+        """, (
+            member.id,
+        ))
+
+        row = cursor.fetchone()
+
+        if row:
+
+            last_reward = datetime.fromisoformat(
+                row[0]
+            )
+
+            elapsed = now - last_reward
+
+            if elapsed < timedelta(hours=24):
+                continue
+
+        # =========================
+        # GIVE POINTS
+        # =========================
+
+        cursor.execute("""
+        UPDATE users
+        SET points = COALESCE(points, 0) + ?
+        WHERE user_id = ?
+        """, (
+            ADMIN_DAILY_CREATOR_POINTS,
+            member.id
+        ))
+
+        # =========================
+        # GET UPDATED POINTS
+        # =========================
+
+        cursor.execute("""
+        SELECT points
+        FROM users
+        WHERE user_id = ?
+        """, (
+            member.id,
+        ))
+
+        result = cursor.fetchone()
+
+        updated_points = result[0] if result else 0
+
+        rewarded_users.append(
+            f"{member.mention} "
+            f"(Creator Points: {updated_points})"
+        )
+
+        # =========================
+        # SAVE REWARD TIME
+        # =========================
+
+        cursor.execute("""
+        INSERT OR REPLACE INTO admin_daily_rewards
+        (
+            user_id,
+            last_reward
+        )
+        VALUES (?, ?)
+        """, (
+            member.id,
+            now.isoformat()
+        ))
+
+    conn.commit()
+
+    # =========================
+    # LOG
+    # =========================
+
+    if rewarded_users:
+
+        log_channel = guild.get_channel(
+            ADMIN_LOG_CHANNEL
+        )
+
+        if log_channel:
+
+            await log_channel.send(
+                f"<@&{ADMIN_ROLE_ID}>\n\n"
+                f"🎁 **Daily Admin Reward**\n\n"
+                f"Reward Given: "
+                f":gem: +{ADMIN_DAILY_CREATOR_POINTS} Creator Points\n\n"
+                + "\n".join(rewarded_users)
+            )
+
 @bot.tree.command(name="view_board")
 async def aj_booard(interaction: discord.Interaction):
     if str(interaction.user.id) != "488015447417946151":
@@ -7434,6 +7553,11 @@ async def on_ready():
 
     if not update_quests.is_running():
         update_quests.start()
+
+    if not admin_creator_points_loop.is_running():
+        admin_creator_points_loop.start()
+
+    await give_admin_creator_points()
 
     for guild in bot.guilds:
         invite_cache[guild.id] = {
