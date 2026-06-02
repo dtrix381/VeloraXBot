@@ -2821,7 +2821,7 @@ class CommunityQuestView(ui.View):
 
                 completed_embed.add_field(
                     name="Members Who Claimed",
-                    value=claimer_text,
+                    value=f"{len(claimer_list)} members",
                     inline=False
                 )
 
@@ -2836,6 +2836,15 @@ class CommunityQuestView(ui.View):
                     content=f"<@{created_by}> Your quest is now completed.",
                     embed=completed_embed
                 )
+
+                chunk_size = 40
+
+                for i in range(0, len(claimer_list), chunk_size):
+                    chunk = claimer_list[i:i + chunk_size]
+
+                    await thread.send(
+                        "\n".join(chunk)
+                    )
 
                 # =========================
                 # EDIT ORIGINAL QUEST MESSAGE
@@ -6344,19 +6353,19 @@ class ReportReviewView(ui.View):
                     f"📝 Reporter: {reporter.mention if reporter else f'<@{reporter_id}>'}\n"
                     f"👮 Reviewed By: {admin.mention}\n\n"
 
-                    f"📉 Reported User Lost:\n"
+                    f"{member.mention} Lost:\n"
                     f"• -2 Creator Points\n"
                     f"• -1 Velorax\n\n"
 
-                    f"🎁 Reporter Earned:\n"
+                    f"{reporter.mention} Earned:\n"
                     f"• +2 Creator Points\n"
                     f"• +1 Velorax\n\n"
 
-                    f"💎 Reported User Totals:\n"
+                    f"{member.mention} Totals:\n"
                     f"• Creator Points: {reported_points}\n"
                     f"• Velorax: {reported_velorax}\n\n"
 
-                    f"💰 Reporter Totals:\n"
+                    f"{reporter.mention} Totals:\n"
                     f"• Creator Points: {reporter_points}\n"
                     f"• Velorax: {reporter_velorax}"
                 )
@@ -7568,4 +7577,3 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
-
