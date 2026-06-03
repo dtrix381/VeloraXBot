@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, UTC
 import re
 import os
 import math
+from openpyxl import Workbook
+import random
 
 GUILD_ID = 1501471671360553131
 GUILD_OWNER_ID = 488015447417946151
@@ -22,6 +24,7 @@ FIRST_OFFENSE_ROLE = 1507613554910433320
 SECOND_OFFENSE_ROLE = 1507613855587766302
 WAITING_ROOM_CHANNEL = 1510492366660833350
 ADMIN_LOG_CHANNEL = 1501476619641163927
+ADMIN_DAILY_CREATOR_POINTS = 50
 
 CATEGORY_NAME = 1507640053315407904
 REGISTER_CHANNEL = 1507640055680733244
@@ -41,6 +44,16 @@ GOLD_LOGS_CHANNEL = 1507640096290242612
 GOLD_LEADERBOARD_CHANNEL = 1507640098521481236
 SHOP_CHANNEL = 1507640118616391802
 APPROVAL_CHANNEL = 1507640094951997460
+
+RAFFLE_CHANNEL = 1511554965938901023
+RAFFLE_PRIZE = "$10"
+RAFFLE_ENTRY_COST = 1
+GIVEAWAY_ARTWORK = (
+    "https://cdn.discordapp.com/attachments/"
+    "1225024450345439313/"
+    "1511510976803901501/"
+    "image.png"
+)
 
 ADMIN_DAILY_CREATOR_POINTS = 50
 EXCHANGE_GOLD_COST = 100
@@ -1319,6 +1332,72 @@ class SubmitQuestButton(ui.Button):
             )
         )
 
+async def send_quest_report(guild, quest_id):
+
+    cursor.execute("""
+    SELECT
+        s.user_id,
+        u.x_username,
+        s.reply_link,
+        s.status
+    FROM submissions s
+    LEFT JOIN users u
+        ON s.user_id = u.user_id
+    WHERE s.quest_id = ?
+    """, (quest_id,))
+
+    submissions = cursor.fetchall()
+
+    wb = Workbook()
+    ws = wb.active
+
+    ws.title = f"Quest {quest_id}"
+
+    ws.append([
+        "Discord User ID",
+        "Discord Username",
+        "X Username",
+        "Reply Link",
+        "Status"
+    ])
+
+    for row in submissions:
+
+        user_id = row[0]
+
+        member = guild.get_member(user_id)
+
+        discord_username = (
+            str(member)
+            if member
+            else str(user_id)
+        )
+
+        ws.append([
+            user_id,
+            discord_username,
+            row[1],
+            row[2],
+            row[3]
+        ])
+
+    filename = f"quest_{quest_id}_report.xlsx"
+
+    wb.save(filename)
+
+    admin_channel = guild.get_channel(
+        ADMIN_LOG_CHANNEL
+    )
+
+    if admin_channel:
+
+        await admin_channel.send(
+            f"📊 Quest #{quest_id} completed.",
+            file=discord.File(filename)
+        )
+
+    os.remove(filename)
+
 # =========================
 # APPROVAL VIEW
 # =========================
@@ -1830,6 +1909,11 @@ class ApprovalView(ui.View):
 
                             print(f"Proof thread lock error: {e}")
                     conn.commit()
+
+                    await send_quest_report(
+                        interaction.guild,
+                        self.quest_id
+                    )
 
                     completed_embed = discord.Embed(
                         title=f"Quest #{self.quest_id} - {quest_title}",
@@ -2474,6 +2558,24 @@ async def load_persistent_views():
     bot.add_view(CreatorReviewView())
     bot.add_view(ReportReviewView())
     bot.add_view(PayoutConfirmView())
+    bot.add_view(GiveawayEntryView())
+    bot.add_view(GiveawayPayoutView())
+    bot.add_view(GiveawayReceivedView())
+
+    cursor.execute("""
+    SELECT giveaway_id
+    FROM giveaways
+    WHERE completed = 0
+    """)
+
+    active = cursor.fetchone()
+
+    if not active:
+
+        guild = bot.get_guild(GUILD_ID)
+
+        if guild:
+            await create_new_giveaway(guild)
 
     print("All persistent views loaded.")
 
@@ -3783,6 +3885,75 @@ async def update_quests():
 async def admin_creator_points_loop():
 
     await give_admin_creator_points()
+
+# =========================
+# GIVEAWAY LOOP
+# =========================
+
+@tasks.loop(minutes=60)
+async def giveaway_loop():
+
+    cursor.execute("""
+    SELECT
+        giveaway_id,
+        raffle_message_id,
+        draw_time
+    FROM giveaways
+    WHERE completed = 0
+    """)
+
+    giveaways = cursor.fetchall()
+
+    now = datetime.now(UTC)
+
+    for giveaway_id, raffle_message_id, draw_time in giveaways:
+
+        try:
+            draw_time = datetime.fromisoformat(draw_time)
+        except:
+            continue
+
+        if now >= draw_time:
+
+            await draw_giveaway_winner(
+                giveaway_id,
+                raffle_message_id
+            )
+
+# =========================
+# GIVEAWAY DRAW TASK
+# =========================
+
+@tasks.loop(minutes=1)
+async def giveaway_draw_task():
+
+    cursor.execute("""
+    SELECT
+        giveaway_id,
+        raffle_message_id,
+        draw_time
+    FROM giveaways
+    WHERE completed = 0
+    """)
+
+    giveaways = cursor.fetchall()
+
+    now = datetime.now(UTC)
+
+    for giveaway in giveaways:
+
+        giveaway_id = giveaway[0]
+        raffle_message_id = giveaway[1]
+        draw_time = datetime.fromisoformat(
+            giveaway[2]
+        )
+
+        if now >= draw_time:
+
+            await draw_giveaway_winner(
+                giveaway_id,
+                raffle_message_id
+            )
 
 @bot.tree.command(name="profile")
 @app_commands.describe(member="Select member")
@@ -6989,6 +7160,823 @@ async def on_member_remove(member):
 
 
 # =========================
+# GIVEAWAY CONFIRM VIEW
+# =========================
+
+class GiveawayConfirmView(ui.View):
+
+    def __init__(self, giveaway_id):
+        super().__init__(timeout=60)
+
+        self.giveaway_id = giveaway_id
+
+    @discord.ui.button(
+        label="Enter Raffle",
+        style=discord.ButtonStyle.green
+    )
+    async def confirm(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        # =========================
+        # ALREADY ENTERED
+        # =========================
+
+        cursor.execute("""
+        SELECT id
+        FROM giveaway_entries
+        WHERE giveaway_id = ?
+        AND user_id = ?
+        """, (
+            self.giveaway_id,
+            interaction.user.id
+        ))
+
+        if cursor.fetchone():
+            return await interaction.response.send_message(
+                "❌ You already entered this giveaway.",
+                ephemeral=True
+            )
+
+        # =========================
+        # CHECK GOLD
+        # =========================
+
+        cursor.execute("""
+        SELECT gold_points
+        FROM users
+        WHERE user_id = ?
+        """, (
+            interaction.user.id,
+        ))
+
+        result = cursor.fetchone()
+
+        current_gold = result[0] if result else 0
+
+        if current_gold < RAFFLE_ENTRY_COST:
+            return await interaction.response.send_message(
+                "❌ You need at least :moneybag: 1 Gold Point.",
+                ephemeral=True
+            )
+
+        # =========================
+        # REMOVE GOLD
+        # =========================
+
+        cursor.execute("""
+        UPDATE users
+        SET gold_points = gold_points - ?
+        WHERE user_id = ?
+        """, (
+            RAFFLE_ENTRY_COST,
+            interaction.user.id
+        ))
+
+        # =========================
+        # SAVE ENTRY
+        # =========================
+
+        cursor.execute("""
+        INSERT INTO giveaway_entries (
+            giveaway_id,
+            user_id,
+            entered_at
+        )
+        VALUES (?, ?, ?)
+        """, (
+            self.giveaway_id,
+            interaction.user.id,
+            datetime.now(UTC).isoformat()
+        ))
+
+        conn.commit()
+
+        # =========================
+        # UPDATE PARTICIPANT COUNT
+        # =========================
+
+        await update_giveaway_participants(
+            interaction.guild,
+            self.giveaway_id
+        )
+
+        # =========================
+        # LOGS
+        # =========================
+
+        log_channel = interaction.guild.get_channel(
+            GOLD_LOGS_CHANNEL
+        )
+
+        if log_channel:
+
+            cursor.execute("""
+            SELECT gold_points
+            FROM users
+            WHERE user_id = ?
+            """, (
+                interaction.user.id,
+            ))
+
+            updated = cursor.fetchone()
+
+            remaining_gold = updated[0] if updated else 0
+
+            await log_channel.send(
+                f"🎟️ **Giveaway Entry**\n\n"
+                f"👤 {interaction.user.mention}\n"
+                f"Spent: :moneybag: 1 Gold Point\n"
+                f"Remaining Gold: :moneybag: {remaining_gold}"
+            )
+
+        await interaction.response.edit_message(
+            content="✅ Raffle entry submitted.",
+            view=None
+        )
+
+    @discord.ui.button(
+        label="❌ Cancel",
+        style=discord.ButtonStyle.gray
+    )
+    async def cancel(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        await interaction.response.edit_message(
+            content="Cancelled.",
+            view=None
+        )
+
+
+# =========================
+# GIVEAWAY ENTRY VIEW
+# =========================
+
+class GiveawayEntryView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Enter Raffle",
+        style=discord.ButtonStyle.green,
+        custom_id="raffle_enter"
+    )
+    async def enter(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+        cursor.execute("""
+        SELECT giveaway_id
+        FROM giveaways
+        WHERE completed = 0
+        ORDER BY giveaway_id DESC
+        LIMIT 1
+        """)
+
+        giveaway = cursor.fetchone()
+
+        if not giveaway:
+            return await interaction.response.send_message(
+                "No active raffle.",
+                ephemeral=True
+            )
+
+        giveaway_id = giveaway[0]
+
+        await interaction.response.send_message(
+            "🎟 Entering costs :moneybag: **1 Gold Point**.\n\n"
+            "Continue?",
+            view=GiveawayConfirmView(giveaway_id),
+            ephemeral=True
+        )
+
+# =========================
+# UPDATE PARTICIPANT COUNT
+# =========================
+
+async def update_giveaway_participants(
+        guild,
+        giveaway_id
+):
+
+    cursor.execute("""
+    SELECT raffle_message_id
+    FROM giveaways
+    WHERE giveaway_id = ?
+    """, (
+        giveaway_id,
+    ))
+
+    result = cursor.fetchone()
+
+    if not result:
+        return
+
+    raffle_message_id = result[0]
+
+    raffle_channel = guild.get_channel(
+        RAFFLE_CHANNEL
+    )
+
+    if not raffle_channel:
+        return
+
+    try:
+
+        message = await raffle_channel.fetch_message(
+            raffle_message_id
+        )
+
+        cursor.execute("""
+        SELECT COUNT(*)
+        FROM giveaway_entries
+        WHERE giveaway_id = ?
+        """, (
+            giveaway_id,
+        ))
+
+        total_entries = cursor.fetchone()[0]
+
+        embed = message.embeds[0]
+
+        embed.set_field_at(
+            1,
+            name="Participants",
+            value=str(total_entries),
+            inline=False
+        )
+
+        await message.edit(embed=embed)
+
+    except Exception as e:
+        print("Giveaway participant update error:", e)
+
+
+# =========================
+# CREATE GIVEAWAY
+# =========================
+
+async def create_new_giveaway(guild):
+
+    raffle_channel = guild.get_channel(
+        RAFFLE_CHANNEL
+    )
+
+    if not raffle_channel:
+        return
+
+    draw_time = datetime.now(UTC) + timedelta(hours=24)
+
+    cursor.execute("""
+    INSERT INTO giveaways (
+        created_at,
+        draw_time,
+        completed
+    )
+    VALUES (?, ?, 0)
+    """, (
+        datetime.now(UTC).isoformat(),
+        draw_time.isoformat()
+    ))
+
+    giveaway_id = cursor.lastrowid
+
+    conn.commit()
+
+    # ping role
+    ping_message = await raffle_channel.send(
+        f"<@&{MEMBER_ROLE_ID}>"
+    )
+
+    embed = discord.Embed(
+        title="1 Gold Point Giveaway",
+        description=(
+            "Spend :moneybag: **1 Gold Point** to enter.\n\n"
+            "🏆 Winner takes home **$10**"
+        ),
+        color=discord.Color.gold()
+    )
+
+    embed.add_field(
+        name="Entry Cost",
+        value=":moneybag: 1 Gold Point",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Participants",
+        value="0",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Draw Date",
+        value=f"<t:{int(draw_time.timestamp())}:F>",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Entries",
+        value="One entry per user",
+        inline=False
+    )
+
+    embed.set_image(
+        url="https://cdn.discordapp.com/attachments/1225024450345439313/1511510976803901501/image.png?ex=6a20b7cb&is=6a1f664b&hm=fd616be3c6f85db119fb4611f9d470a4063911ea1837e9c2ff012d9abc3e282d"
+    )
+
+    raffle_message = await raffle_channel.send(
+        embed=embed,
+        view=GiveawayEntryView()
+    )
+
+    cursor.execute("""
+    UPDATE giveaways
+    SET
+        raffle_message_id = ?,
+        ping_message_id = ?
+    WHERE giveaway_id = ?
+    """, (
+        raffle_message.id,
+        ping_message.id,
+        giveaway_id
+    ))
+
+    conn.commit()
+
+# =========================
+# DRAW GIVEAWAY WINNER
+# =========================
+
+async def draw_giveaway_winner(
+        giveaway_id,
+        raffle_message_id
+):
+
+    guild = bot.get_guild(GUILD_ID)
+
+    if not guild:
+        return
+
+    cursor.execute("""
+    SELECT ping_message_id
+    FROM giveaways
+    WHERE giveaway_id = ?
+    """, (
+        giveaway_id,
+    ))
+
+    result = cursor.fetchone()
+
+    ping_message_id = result[0] if result else None
+
+    raffle_channel = guild.get_channel(
+        RAFFLE_CHANNEL
+    )
+
+    if not raffle_channel:
+        return
+
+    try:
+        giveaway_message = await raffle_channel.fetch_message(
+            raffle_message_id
+        )
+    except:
+        return
+
+    # =========================
+    # GET ENTRIES
+    # =========================
+
+    cursor.execute("""
+    SELECT user_id
+    FROM giveaway_entries
+    WHERE giveaway_id = ?
+    """, (
+        giveaway_id,
+    ))
+
+    entries = cursor.fetchall()
+
+    # =========================
+    # NO ENTRIES
+    # =========================
+
+    if not entries:
+
+        cursor.execute("""
+        UPDATE giveaways
+        SET completed = 1
+        WHERE giveaway_id = ?
+        """, (
+            giveaway_id,
+        ))
+
+        conn.commit()
+
+        ended_embed = discord.Embed(
+            title="🎉 Giveaway Ended",
+            description="No valid entries were received.",
+            color=discord.Color.red()
+        )
+
+        ended_embed.add_field(
+            name="Prize",
+            value="$10",
+            inline=False
+        )
+
+        ended_embed.add_field(
+            name="Participants",
+            value="0",
+            inline=False
+        )
+
+        ended_embed.set_footer(
+            text=f"Giveaway #{giveaway_id}"
+        )
+
+        await giveaway_message.edit(
+            embed=ended_embed,
+            view=GiveawayClosedView()
+        )
+
+        await create_new_giveaway(guild)
+        return
+
+    # =========================
+    # PICK WINNER
+    # =========================
+
+    winner_id = random.choice(entries)[0]
+
+    cursor.execute("""
+    UPDATE giveaways
+    SET
+        completed = 1,
+        winner_id = ?
+    WHERE giveaway_id = ?
+    """, (
+        winner_id,
+        giveaway_id
+    ))
+
+    conn.commit()
+
+    winner = guild.get_member(
+        winner_id
+    )
+
+    if not winner:
+        return
+
+    cursor.execute("""
+    SELECT COUNT(*)
+    FROM giveaway_entries
+    WHERE giveaway_id = ?
+    """, (
+        giveaway_id,
+    ))
+
+    participant_count = cursor.fetchone()[0]
+
+    # =========================
+    # WINNER EMBED
+    # =========================
+
+    winner_embed = discord.Embed(
+        title="🎉 Giveaway Ended",
+        color=discord.Color.gold()
+    )
+
+    winner_embed.add_field(
+        name="Winner",
+        value=winner.mention,
+        inline=False
+    )
+
+    winner_embed.add_field(
+        name="Prize",
+        value="$10",
+        inline=False
+    )
+
+    winner_embed.add_field(
+        name="Participants",
+        value=str(participant_count),
+        inline=False
+    )
+
+    winner_embed.add_field(
+        name="Entry Cost",
+        value=":moneybag: 1 Gold Point",
+        inline=False
+    )
+
+    winner_embed.set_thumbnail(
+        url=winner.display_avatar.url
+    )
+
+    winner_embed.set_footer(
+        text=f"Giveaway #{giveaway_id}"
+    )
+
+    await giveaway_message.edit(
+        embed=winner_embed,
+        view=GiveawayClosedView()
+    )
+
+    try:
+        if ping_message_id:
+            ping_message = await raffle_channel.fetch_message(
+                ping_message_id
+            )
+
+            await ping_message.delete()
+
+    except:
+        pass
+
+    # =========================
+    # ANNOUNCE WINNER
+    # =========================
+
+    await raffle_channel.send(
+        f"🎉 Congratulations {winner.mention}!\n\n"
+        f"You won **$10** from the raffle giveaway!"
+    )
+
+    # =========================
+    # LOGS
+    # =========================
+
+    log_channel = guild.get_channel(
+        GOLD_LOGS_CHANNEL
+    )
+
+    if log_channel:
+        await log_channel.send(
+            f"🏆 **Raffle Winner**\n\n"
+            f"Winner: {winner.mention}\n"
+            f"Prize: $10\n"
+            f"Participants: {participant_count}\n"
+            f"Gold Turned Into: $10"
+        )
+
+    # =========================
+    # CREATE WINNER TICKET
+    # =========================
+
+    category = guild.get_channel(
+        SUPPORT_CATEGORY_ID
+    )
+
+    admin_role = guild.get_role(
+        ADMIN_ROLE_ID
+    )
+
+    overwrites = {
+
+        guild.default_role:
+            discord.PermissionOverwrite(
+                view_channel=False
+            ),
+
+        winner:
+            discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True
+            ),
+
+        admin_role:
+            discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True
+            ),
+
+        guild.me:
+            discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True
+            )
+    }
+
+    ticket = await guild.create_text_channel(
+        name=f"raffle-winner-{winner.name}",
+        category=category,
+        overwrites=overwrites
+    )
+
+    await ticket.edit(
+        topic=f"winner:{winner.id}|giveaway:{giveaway_id}"
+    )
+
+    embed = discord.Embed(
+        title="🏆 Raffle Winner",
+        description=(
+            f"{winner.mention}\n\n"
+            "Congratulations!\n"
+            "You won **$10**."
+        ),
+        color=discord.Color.gold()
+    )
+
+    embed.set_thumbnail(
+        url=winner.display_avatar.url
+    )
+
+    await ticket.send(
+        content=f"{winner.mention} <@&{ADMIN_ROLE_ID}>",
+        embed=embed,
+        view=GiveawayPayoutView()
+    )
+
+    # =========================
+    # START NEXT GIVEAWAY
+    # =========================
+
+    await create_new_giveaway(guild)
+
+
+# =========================
+# GIVEAWAY CLOSED VIEW
+# =========================
+
+class GiveawayClosedView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+        self.add_item(
+            discord.ui.Button(
+                label="Giveaway Ended",
+                style=discord.ButtonStyle.secondary,
+                disabled=True
+            )
+        )
+
+# =========================
+# GIVEAWAY PAYOUT VIEW
+# =========================
+
+class GiveawayPayoutView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Start Payout",
+        style=discord.ButtonStyle.green,
+        custom_id="giveaway_start_payout"
+    )
+    async def payout(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        admin_role = interaction.guild.get_role(
+            ADMIN_ROLE_ID
+        )
+
+        if admin_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "Admins only.",
+                ephemeral=True
+            )
+
+        topic = interaction.channel.topic
+
+        parts = {}
+
+        for item in topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["winner"])
+
+        winner = interaction.guild.get_member(
+            winner_id
+        )
+
+        if not winner:
+            return await interaction.response.send_message(
+                "Winner not found.",
+                ephemeral=True
+            )
+
+        embed = discord.Embed(
+            title="Raffle Winner Payout",
+            description=(
+                f"{winner.mention}\n\n"
+                "Please confirm once you have "
+                "received your $10 reward."
+            ),
+            color=discord.Color.green()
+        )
+
+        await interaction.channel.edit(
+            topic=f"{topic}|admin:{interaction.user.id}"
+        )
+
+        await interaction.response.send_message(
+            content=winner.mention,
+            embed=embed,
+            view=GiveawayReceivedView()
+        )
+
+# =========================
+# GIVEAWAY RECEIVED VIEW
+# =========================
+
+class GiveawayReceivedView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="✅ I Received It",
+        style=discord.ButtonStyle.green,
+        custom_id="giveaway_received"
+    )
+    async def received(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["winner"])
+
+        if interaction.user.id != winner_id:
+            return await interaction.response.send_message(
+                "Only the winner can confirm.",
+                ephemeral=True
+            )
+
+        admin_id = int(parts["admin"])
+
+        admin = interaction.guild.get_member(
+            admin_id
+        )
+
+        payout_channel = interaction.guild.get_channel(
+            APPROVAL_CHANNEL
+        )
+
+        if payout_channel:
+
+            embed = discord.Embed(
+                title="🏆 Daily Raffle Paid",
+                color=discord.Color.green()
+            )
+
+            embed.add_field(
+                name="Winner",
+                value=interaction.user.mention,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Prize",
+                value="$10",
+                inline=False
+            )
+
+            embed.add_field(
+                name="Handled By",
+                value=admin.mention if admin else "Unknown",
+                inline=False
+            )
+
+            embed.set_thumbnail(
+                url=interaction.user.display_avatar.url
+            )
+
+            await payout_channel.send(
+                embed=embed
+            )
+
+        await interaction.response.edit_message(
+            content="✅ Prize confirmed received.",
+            embed=None,
+            view=None
+        )
+
+# =========================
 # DELETE MESSAGES
 # =========================
 
@@ -7003,6 +7991,19 @@ async def on_message(message):
     # =========================
 
     if message.channel.id == SHOP_CHANNEL:
+
+        try:
+            await message.delete()
+        except:
+            pass
+
+        return
+
+    # =========================
+    # BLOCK TALKING IN RAFFLE
+    # =========================
+
+    if message.channel.id == RAFFLE_CHANNEL:
 
         try:
             await message.delete()
@@ -7563,6 +8564,31 @@ async def on_ready():
     if not update_quests.is_running():
         update_quests.start()
 
+    if not giveaway_loop.is_running():
+        giveaway_loop.start()
+
+        # =========================
+        # CREATE FIRST GIVEAWAY
+        # =========================
+
+    cursor.execute("""
+        SELECT giveaway_id
+        FROM giveaways
+        WHERE completed = 0
+        """)
+
+    active = cursor.fetchone()
+
+    if not active:
+
+        guild = bot.get_guild(GUILD_ID)
+
+        if guild:
+            await create_new_giveaway(guild)
+
+    if not giveaway_draw_task.is_running():
+        giveaway_draw_task.start()
+
     if not admin_creator_points_loop.is_running():
         admin_creator_points_loop.start()
 
@@ -7573,6 +8599,7 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
+
 
 # Run the bot
 if __name__ == "__main__":
