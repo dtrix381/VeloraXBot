@@ -84,9 +84,19 @@ intents.members = True
 # =========================
 # DATABASE
 # =========================
+print("DB PATH:", DB_PATH)
+print("DB EXISTS:", os.path.exists(DB_PATH))
 
 conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
+
+cursor.execute("""
+SELECT name
+FROM sqlite_master
+WHERE type='table'
+""")
+
+print("TABLES:", cursor.fetchall())
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
