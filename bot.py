@@ -493,7 +493,7 @@ class XModal(ui.Modal, title="Connect Your X"):
         lowercase_username = original_username.lower()
 
         if not re.match(r"^[A-Za-z0-9_]+$", original_username):
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Invalid username.",
                 ephemeral=True
             )
@@ -794,6 +794,14 @@ class RejectCreatorModal(ui.Modal):
             self.user_id
         )
 
+        if not member:
+            try:
+                member = await interaction.guild.fetch_member(
+                    self.user_id
+                )
+            except:
+                member = None
+
         cursor.execute("""
         DELETE FROM users
         WHERE user_id = ?
@@ -805,8 +813,14 @@ class RejectCreatorModal(ui.Modal):
             WAITING_ROOM_CHANNEL
         )
 
+        mention = (
+            member.mention
+            if member
+            else f"<@{self.user_id}>"
+        )
+
         await waiting_room.send(
-            f"{member.mention}\n\n"
+            f"{mention}\n\n"
             f"❌ Your creator application has been denied for now.\n\n"
             f"Reason: {self.reason}\n\n"
             f"👮 Denied By: {interaction.user.mention}\n\n"
@@ -3612,6 +3626,10 @@ async def paid_quest(
                 modal_interaction: discord.Interaction
         ):
 
+            await modal_interaction.response.defer(
+                ephemeral=True
+            )
+
             QUEST_TYPES = {
 
                 "like_reply": {
@@ -3821,7 +3839,7 @@ async def paid_quest(
 
             conn.commit()
 
-            await modal_interaction.response.send_message(
+            await modal_interaction.followup.send(
                 "Quest created.",
                 ephemeral=True
             )
@@ -8612,3 +8630,4 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
+
