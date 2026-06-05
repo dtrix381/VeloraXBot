@@ -6327,6 +6327,8 @@ class ReportReviewView(ui.View):
     )
     async def let_go(self, interaction: discord.Interaction, button: ui.Button):
 
+        await interaction.response.defer(ephemeral=True)
+
         embed = interaction.message.embeds[0]
 
         reported_user = None
@@ -6413,7 +6415,7 @@ class ReportReviewView(ui.View):
             except:
                 pass
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Report cleared.",
             ephemeral=True
         )
