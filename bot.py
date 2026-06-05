@@ -326,11 +326,17 @@ class ApprovalConfirmView(ui.View):
         # =========================
         # 5. CREATOR LOGS
         # =========================
+        member_text = (
+            member.mention
+            if member
+            else f"<@{self.user_id}>"
+        )
+
         log_channel = guild.get_channel(LOGS_CHANNEL)
         if log_channel:
             await log_channel.send(
                 f"🎉 **Creator Approved**\n\n"
-                f"👤 **Member:** {member.mention}\n"
+                f"👤 **Member:** {member_text}\n"
                 f"🪪 **Reward:** :gem: +25 Creator Points\n\n"
                 f"👮 **Approved by:** {interaction.user.mention}"
             )
@@ -338,6 +344,12 @@ class ApprovalConfirmView(ui.View):
         # =========================
         # 6. GOLD LOGS (ONLY IF NOT BOT INVITE)
         # =========================
+        creator_text = (
+            member.mention
+            if member
+            else f"<@{self.user_id}>"
+        )
+
         gold_log_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
 
         if (
@@ -348,7 +360,7 @@ class ApprovalConfirmView(ui.View):
         ):
             await gold_log_channel.send(
                 f"💰 **Golds Awarded via Invite Referral System**\n\n"
-                f"👤 **Creator:** {member.mention}\n"
+                f"👤 **Creator:** {creator_text}\n"
                 f"👑 **Inviter:** {inviter.mention}\n\n"
                 f"💰 **Reward:** :moneybag: +5 Gold Point\n"
                 f"📊 **Total Gold Points:** :moneybag: {total_gold}\n\n"
@@ -407,6 +419,8 @@ class CreatorReviewView(ui.View):
             await interaction.response.send_message("❌ Only Admins can click this button.", ephemeral=True)
             return
 
+        await interaction.response.defer()
+
         embed = interaction.message.embeds[0]
 
         user_id = None
@@ -442,7 +456,7 @@ class CreatorReviewView(ui.View):
             username=username
         )
 
-        await interaction.response.edit_message(
+        await interaction.message.edit(
             embed=confirm_embed,
             view=confirm_view
         )
@@ -3529,7 +3543,7 @@ async def setup(interaction: discord.Interaction):
             value="quote_retweet"
         ),
         app_commands.Choice(
-            name="Tweet = 80 Gold Points",
+            name="Tweet = 100 Gold Points",
             value="tweet"
         )
     ]
@@ -3666,7 +3680,7 @@ async def paid_quest(
                 },
 
                 "tweet": {
-                    "points": 80,
+                    "points": 100,
                     "task": (
                         "Create a Tweet about the Project "
                         "and Submit Tweet Link"
