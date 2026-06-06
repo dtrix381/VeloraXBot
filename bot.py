@@ -275,52 +275,6 @@ class ApprovalConfirmView(ui.View):
             WHERE user_id = ?
         """, (self.user_id,))
 
-        # =========================
-        # 3. GIVE GOLD TO INVITER (EXCEPT BOT)
-        # =========================
-        is_bot_invite = False
-
-        inviter = interaction.guild.get_member(self.inviter_id)
-
-        if inviter and inviter.id != BOT_INVITER_ID:
-            cursor.execute("""
-                UPDATE users
-                SET gold_points = COALESCE(gold_points, 0) + 5
-                WHERE user_id = ?
-            """, (self.inviter_id,))
-        else:
-            is_bot_invite = True
-
-        # =========================
-        # 4. MARK INVITE REWARDED
-        # =========================
-        cursor.execute("""
-            UPDATE invite_joins
-            SET rewarded = 1
-            WHERE invited_id = ?
-        """, (self.user_id,))
-
-        # =========================
-        # 5. GET TOTAL GOLD (SAFE)
-        # =========================
-        total_gold = 0
-
-        admin_role = interaction.guild.get_role(ADMIN_ROLE_ID)
-
-        if (
-                inviter
-                and not is_bot_invite
-                and admin_role not in inviter.roles
-        ):
-            cursor.execute("""
-                SELECT gold_points
-                FROM users
-                WHERE user_id = ?
-            """, (self.inviter_id,))
-
-            result = cursor.fetchone()
-            total_gold = result[0] if result else 0
-
         conn.commit()
 
         # =========================
@@ -338,32 +292,6 @@ class ApprovalConfirmView(ui.View):
                 f"🎉 **Creator Approved**\n\n"
                 f"👤 **Member:** {member_text}\n"
                 f"🪪 **Reward:** :gem: +25 Creator Points\n\n"
-                f"👮 **Approved by:** {interaction.user.mention}"
-            )
-
-        # =========================
-        # 6. GOLD LOGS (ONLY IF NOT BOT INVITE)
-        # =========================
-        creator_text = (
-            member.mention
-            if member
-            else f"<@{self.user_id}>"
-        )
-
-        gold_log_channel = guild.get_channel(GOLD_LOGS_CHANNEL)
-
-        if (
-                gold_log_channel
-                and inviter
-                and not is_bot_invite
-                and admin_role not in inviter.roles
-        ):
-            await gold_log_channel.send(
-                f"💰 **Golds Awarded via Invite Referral System**\n\n"
-                f"👤 **Creator:** {creator_text}\n"
-                f"👑 **Inviter:** {inviter.mention}\n\n"
-                f"💰 **Reward:** :moneybag: +5 Gold Point\n"
-                f"📊 **Total Gold Points:** :moneybag: {total_gold}\n\n"
                 f"👮 **Approved by:** {interaction.user.mention}"
             )
 
@@ -747,18 +675,7 @@ class InviteApprovalView(ui.View):
         WHERE user_id = ?
         """, (self.user_id,))
 
-        # +1 gold to inviter
-        cursor.execute("""
-        UPDATE users
-        SET gold_points = gold_points + 1
-        WHERE user_id = ?
-        """, (self.inviter_id,))
-
-        cursor.execute("""
-        UPDATE invite_joins
-        SET rewarded = 1
-        WHERE invited_id = ?
-        """, (self.user_id,))
+        rewarded = 0
 
         conn.commit()
 
@@ -1625,6 +1542,63 @@ class ApprovalView(ui.View):
                 datetime.now(UTC).isoformat(),
                 self.submission_id
             ))
+
+            cursor.execute("""
+            SELECT inviter_id
+            FROM invite_joins
+            WHERE invited_id = ?
+            AND rewarded = 0
+            LIMIT 1
+            """, (self.user_id,))
+
+            result = cursor.fetchone()
+
+            if result:
+                inviter_id = result[0]
+
+                cursor.execute("""
+                UPDATE users
+                SET gold_points = gold_points + 5
+                WHERE user_id = ?
+                """, (inviter_id,))
+
+                cursor.execute("""
+                UPDATE invite_joins
+                SET rewarded = 1
+                WHERE invited_id = ?
+                """, (self.user_id,))
+
+                # Fetch updated total
+                cursor.execute("""
+                SELECT gold_points
+                FROM users
+                WHERE user_id = ?
+                """, (inviter_id,))
+
+                gold_result = cursor.fetchone()
+
+                total_gold = (
+                    gold_result[0]
+                    if gold_result
+                    else 0
+                )
+
+                inviter = interaction.guild.get_member(inviter_id)
+
+                if inviter:
+                    gold_log_channel = interaction.guild.get_channel(
+                        GOLD_LOGS_CHANNEL
+                    )
+
+                    if gold_log_channel:
+                        await gold_log_channel.send(
+                            f"🎉 **Invite Reward Released**\n\n"
+                            f"👤 **Creator:** <@{self.user_id}>\n"
+                            f"👑 **Inviter:** {inviter.mention}\n\n"
+                            f"💰 **Reward Earned:** :moneybag: +5 Gold Points\n"
+                            f"📊 **Inviter Total Gold:** :moneybag: {total_gold}\n\n"
+                            f"✅ Triggered after the creator's first approved paid quest."
+                        )
 
             # =========================
             # INCREASE CLAIM COUNT
