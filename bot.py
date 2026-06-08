@@ -2552,6 +2552,36 @@ async def load_persistent_views():
             print(f"ApprovalView Error: {e}")
 
     # =========================
+    # FOLLOW QUEST VIEWS
+    # =========================
+
+    cursor.execute("""
+    SELECT
+        follow_quest_id,
+        creator_id
+    FROM follow_quests
+    WHERE completed = 0
+    """)
+
+    follow_quests = cursor.fetchall()
+
+    for follow_quest_id, creator_id in follow_quests:
+
+        try:
+
+            bot.add_view(
+                FollowQuestView(
+                    follow_quest_id,
+                    creator_id
+                )
+            )
+
+        except Exception as e:
+            print(
+                f"FollowQuestView Error: {e}"
+            )
+
+    # =========================
     # OTHER PERSISTENT VIEWS
     # =========================
 
@@ -3890,7 +3920,7 @@ async def update_quests():
             except:
                 pass
 
-@tasks.loop(hours=24)
+@tasks.loop(hours=4)
 async def admin_creator_points_loop():
 
     await give_admin_creator_points()
@@ -3964,6 +3994,105 @@ async def giveaway_draw_task():
                 raffle_message_id
             )
 
+class ProfileHistoryView(ui.View):
+
+    def __init__(self, profile_embed, history_pages, user_id):
+        super().__init__(timeout=180)
+
+        self.profile_embed = profile_embed
+        self.history_pages = history_pages
+        self.user_id = user_id
+        self.page = 0
+
+        self.update_buttons()
+
+    async def interaction_check(
+            self,
+            interaction: discord.Interaction
+    ):
+        if interaction.user.id != self.user_id:
+
+            await interaction.response.send_message(
+                "You cannot control this profile.",
+                ephemeral=True
+            )
+
+            return False
+
+        return True
+
+    def update_buttons(self):
+
+        self.previous_button.disabled = (
+            self.page == 0
+        )
+
+        self.next_button.disabled = (
+            self.page >= len(self.history_pages) - 1
+        )
+
+        self.page_indicator.label = (
+            f"Page {self.page + 1}/{len(self.history_pages)}"
+        )
+
+    @ui.button(
+        emoji="⏮️",
+        style=discord.ButtonStyle.secondary
+    )
+    async def previous_button(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        if self.page > 0:
+            self.page -= 1
+
+        self.update_buttons()
+
+        await interaction.response.edit_message(
+            embeds=[
+                self.profile_embed,
+                self.history_pages[self.page]
+            ],
+            view=self
+        )
+
+    @ui.button(
+        label="Page 1/1",
+        style=discord.ButtonStyle.blurple,
+        disabled=True
+    )
+    async def page_indicator(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+        pass
+
+    @ui.button(
+        emoji="⏭️",
+        style=discord.ButtonStyle.secondary
+    )
+    async def next_button(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        if self.page < len(self.history_pages) - 1:
+            self.page += 1
+
+        self.update_buttons()
+
+        await interaction.response.edit_message(
+            embeds=[
+                self.profile_embed,
+                self.history_pages[self.page]
+            ],
+            view=self
+        )
+
 @bot.tree.command(name="profile")
 @app_commands.describe(member="Select member")
 async def profile(
@@ -4005,7 +4134,6 @@ async def profile(
     WHERE submissions.user_id = ?
     AND submissions.status = 'approved'
     ORDER BY submissions.completed_at DESC
-    LIMIT 10
     """, (member.id,))
 
     history = cursor.fetchall()
@@ -4020,12 +4148,48 @@ async def profile(
 
     x_username, points, gold_points, completed, denied, engagements, quests_created, velorax = data
 
-    rank = get_user_rank(member)
+    filtered_users = []
 
-    if isinstance(rank, int):
-        rank_text = f"#{rank}"
+    cursor.execute("""
+    SELECT user_id
+    FROM users
+    ORDER BY velorax DESC,
+             engagements DESC,
+             quests_created DESC,
+             points DESC
+    """)
+
+    all_users = cursor.fetchall()
+
+    for row in all_users:
+
+        leaderboard_member = interaction.guild.get_member(
+            row[0]
+        )
+
+        if not leaderboard_member:
+            continue
+
+        # Must have creator/member role
+        if not any(
+                role.id == MEMBER_ROLE_ID
+                for role in leaderboard_member.roles
+        ):
+            continue
+
+        # Exclude admins
+        if any(
+                role.id == ADMIN_ROLE_ID
+                for role in leaderboard_member.roles
+        ):
+            continue
+
+        filtered_users.append(row[0])
+
+    if member.id in filtered_users:
+        rank_text = f"#{filtered_users.index(member.id) + 1}"
     else:
-        rank_text = rank
+        rank_text = "Admin (Unranked)"
 
     embed = discord.Embed(
         title=f"{member.display_name} - Rank {rank_text}",
@@ -4107,60 +4271,92 @@ async def profile(
         inline=False
     )
 
-    history_embed = discord.Embed(
-        title="📜 Paid Quests History",
-        color=discord.Color.blurple()
-    )
+    history_pages = []
 
-    # =========================
-    # HISTORY LOOP
-    # =========================
+    chunk_size = 10
 
-    for (
-            quest_id,
-            quest_title,
-            message_id,
-            reply_link,
-            completed_at
-    ) in history:
-        # QUEST CHANNEL
-        quest_channel = get_channel(
-            interaction.guild,
-            QUEST_CHANNEL
+    for i in range(0, len(history), chunk_size):
+
+        page_data = history[i:i + chunk_size]
+
+        page_embed = discord.Embed(
+            title="📜 Paid Quests History",
+            color=discord.Color.blurple()
         )
 
-        # QUEST MESSAGE LINK
-        quest_message_url = (
-            f"https://discord.com/channels/"
-            f"{interaction.guild.id}/"
-            f"{quest_channel.id}/"
-            f"{message_id}"
+        for (
+                quest_id,
+                quest_title,
+                message_id,
+                reply_link,
+                completed_at
+        ) in page_data:
+            quest_channel = get_channel(
+                interaction.guild,
+                QUEST_CHANNEL
+            )
+
+            quest_message_url = (
+                f"https://discord.com/channels/"
+                f"{interaction.guild.id}/"
+                f"{quest_channel.id}/"
+                f"{message_id}"
+            )
+
+            completed_dt = datetime.fromisoformat(
+                str(completed_at)
+            )
+
+            discord_timestamp = int(
+                completed_dt.timestamp()
+            )
+
+            page_embed.add_field(
+                name=f"Quest #{quest_id} - {quest_title}",
+                value=(
+                    f"[Quest Link]({quest_message_url})\n"
+                    f"[Reply Link]({reply_link})\n"
+                    f"Completed <t:{discord_timestamp}:R>"
+                ),
+                inline=False
+            )
+
+        page_embed.set_footer(
+            text=(
+                f"Showing "
+                f"{i + 1}-{min(i + chunk_size, len(history))} "
+                f"of {len(history)} quests"
+            )
         )
 
-        # FORMAT TIME
-        completed_dt = datetime.fromisoformat(str(completed_at))
+        history_pages.append(page_embed)
 
-        discord_timestamp = int(
-            completed_dt.timestamp()
+    if not history_pages:
+        empty_embed = discord.Embed(
+            title="📜 Paid Quests History",
+            description="No approved paid quests yet.",
+            color=discord.Color.blurple()
         )
 
-        history_embed.add_field(
-            name=(
-                f"Quest #{quest_id} - {quest_title}"
-            ),
-            value=(
-                f"[Quest Link]({quest_message_url})\n"
-                f"[Reply Link]({reply_link})\n"
-                f"Completed <t:{discord_timestamp}:R>"
-            ),
-            inline=False
-        )
+        history_pages.append(empty_embed)
 
     # =========================
     # SEND RESPONSE ONCE
     # =========================
 
-    await interaction.response.send_message(embeds=[embed, history_embed])
+    view = ProfileHistoryView(
+        embed,
+        history_pages,
+        interaction.user.id
+    )
+
+    await interaction.response.send_message(
+        embeds=[
+            embed,
+            history_pages[0]
+        ],
+        view=view
+    )
 
 
 class LeaderboardView(ui.View):
@@ -5331,6 +5527,714 @@ async def create_quest(interaction: discord.Interaction):
 
     await interaction.response.send_modal(
         CreateQuestModal()
+    )
+
+
+async def complete_follow_quest(
+        guild,
+        follow_quest_id,
+        quest_message
+):
+
+    cursor.execute("""
+    SELECT
+        creator_id,
+        ping_message_id
+    FROM follow_quests
+    WHERE follow_quest_id = ?
+    """, (
+        follow_quest_id,
+    ))
+
+    quest_data = cursor.fetchone()
+
+    if not quest_data:
+        return
+
+    creator_id, ping_message_id = quest_data
+
+    creator = guild.get_member(
+        creator_id
+    )
+
+    # =========================
+    # GET CLAIMERS
+    # =========================
+
+    cursor.execute("""
+    SELECT
+        users.user_id,
+        users.x_username
+    FROM follow_claims
+    INNER JOIN users
+    ON users.user_id = follow_claims.claimer_id
+    WHERE follow_claims.follow_quest_id = ?
+    ORDER BY follow_claims.claimed_at ASC
+    """, (
+        follow_quest_id,
+    ))
+
+    claimers = cursor.fetchall()
+
+    # =========================
+    # CREATE THREAD
+    # =========================
+
+    thread = await quest_message.create_thread(
+        name=f"Follow Quest #{follow_quest_id} Review"
+    )
+
+    claimer_lines = []
+
+    for user_id, x_username in claimers:
+        claimer_lines.append(
+            f"<@{user_id}> - https://x.com/{x_username}"
+        )
+
+    claimers_text = "\n".join(
+        claimer_lines
+    )
+
+    await thread.send(
+        f"## This Follow Quest has completed.\n\n"
+        f"### Creator\n"
+        f"{creator.mention if creator else creator_id}\n\n"
+        f"### Claimers\n"
+        f"{claimers_text}\n\n"
+        f"Please verify that all users are "
+        f"following your X account.\n\n"
+        f"If any participant falsely claimed "
+        f"without following, you may report them "
+        f"for review."
+    )
+
+    # =========================
+    # DELETE PING
+    # =========================
+
+    try:
+
+        quest_channel = guild.get_channel(
+            QUEST_CHANNEL
+        )
+
+        ping_message = await quest_channel.fetch_message(
+            ping_message_id
+        )
+
+        await ping_message.delete()
+
+    except:
+        pass
+
+    # =========================
+    # DISABLE BUTTONS
+    # =========================
+
+    try:
+
+        completed_embed = quest_message.embeds[0]
+
+        completed_embed.color = discord.Color.red()
+
+        completed_embed.add_field(
+            name="Status",
+            value="✅ Completed",
+            inline=False
+        )
+
+        await quest_message.edit(
+            embed=completed_embed,
+            view=None
+        )
+
+    except:
+        pass
+
+class FollowQuestView(ui.View):
+
+    def __init__(
+            self,
+            follow_quest_id,
+            creator_id
+    ):
+        super().__init__(timeout=None)
+
+        self.follow_quest_id = follow_quest_id
+        self.creator_id = creator_id
+
+    @ui.button(
+        label="Claim Follow Quest",
+        style=discord.ButtonStyle.green,
+        custom_id="follow_quest_claim"
+    )
+    async def claim(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        # =========================
+        # CREATOR CANNOT CLAIM OWN
+        # =========================
+
+        if interaction.user.id == self.creator_id:
+
+            await interaction.response.send_message(
+                "❌ You cannot claim your own Follow Quest.",
+                ephemeral=True
+            )
+
+            return
+
+        # =========================
+        # ALREADY CLAIMED THIS CREATOR
+        # =========================
+
+        cursor.execute("""
+        SELECT 1
+        FROM follow_claims
+        WHERE creator_id = ?
+        AND claimer_id = ?
+        """, (
+            self.creator_id,
+            interaction.user.id
+        ))
+
+        already_claimed = cursor.fetchone()
+
+        if already_claimed:
+
+            await interaction.response.send_message(
+                "❌ You already claimed a Follow Quest from this creator.",
+                ephemeral=True
+            )
+
+            return
+
+        # =========================
+        # GET QUEST
+        # =========================
+
+        cursor.execute("""
+        SELECT
+            max_claims,
+            current_claims,
+            completed
+        FROM follow_quests
+        WHERE follow_quest_id = ?
+        """, (
+            self.follow_quest_id,
+        ))
+
+        quest = cursor.fetchone()
+
+        if not quest:
+
+            await interaction.response.send_message(
+                "❌ Quest not found.",
+                ephemeral=True
+            )
+
+            return
+
+        max_claims, current_claims, completed = quest
+
+        if completed:
+
+            await interaction.response.send_message(
+                "❌ Quest already completed.",
+                ephemeral=True
+            )
+
+            return
+
+        # =========================
+        # GIVE REWARD
+        # =========================
+
+        cursor.execute("""
+        UPDATE users
+        SET
+            points = COALESCE(points,0) + 5,
+            engagements = COALESCE(engagements,0) + 1,
+            velorax = COALESCE(velorax,0) + 1
+        WHERE user_id = ?
+        """, (
+            interaction.user.id,
+        ))
+
+        # =========================
+        # SAVE CLAIM
+        # =========================
+
+        try:
+            cursor.execute("""
+            INSERT INTO follow_claims (
+                follow_quest_id,
+                creator_id,
+                claimer_id,
+                claimed_at
+            )
+            VALUES (?, ?, ?, ?)
+            """, (
+                self.follow_quest_id,
+                self.creator_id,
+                interaction.user.id,
+                datetime.now(UTC).isoformat()
+            ))
+
+            current_claims += 1
+
+            completed_flag = (
+                1
+                if current_claims >= max_claims
+                else 0
+            )
+
+            cursor.execute("""
+            UPDATE follow_quests
+            SET
+                current_claims = ?,
+                completed = ?
+            WHERE follow_quest_id = ?
+            """, (
+                current_claims,
+                completed_flag,
+                self.follow_quest_id
+            ))
+
+            conn.commit()
+
+        except:
+            await interaction.response.send_message(
+                "❌ You already claimed this creator.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            "✅ Follow Quest claimed.\n"
+            "You received :gem: +5 Creator Points.",
+            ephemeral=True
+        )
+
+        log_channel = interaction.guild.get_channel(
+            LOGS_CHANNEL
+        )
+
+        if log_channel:
+            cursor.execute("""
+            SELECT points
+            FROM users
+            WHERE user_id = ?
+            """, (
+                interaction.user.id,
+            ))
+
+            result = cursor.fetchone()
+
+            total_points = result[0] if result else 0
+
+            cursor.execute("""
+            SELECT x_username
+            FROM users
+            WHERE user_id = ?
+            """, (
+                self.creator_id,
+            ))
+
+            result = cursor.fetchone()
+
+            creator_x = result[0] if result else "Unknown"
+
+            await log_channel.send(
+                f"**Follow Quest Claimed**\n\n"
+                f"**User:** {interaction.user.mention}\n"
+                f"**Followed Creator:** `@{creator_x}`\n"
+                f"**Reward:** :gem: +5 Creator Points\n"
+                f"**Earned:** :star2: +1 Velorax\n"
+                f"**Total Creator Points:** :gem: {total_points}"
+            )
+
+        # =========================
+        # UPDATE EMBED COUNTER
+        # =========================
+
+        try:
+
+            embed = interaction.message.embeds[0]
+
+            for i, field in enumerate(embed.fields):
+                if field.name == "Available Claims":
+                    embed.set_field_at(
+                        i,
+                        name="Available Claims",
+                        value=f"{current_claims}/{max_claims}",
+                        inline=False
+                    )
+                    break
+
+            await interaction.message.edit(
+                embed=embed,
+                view=self
+            )
+
+        except:
+            pass
+
+        # =========================
+        # AUTO COMPLETE
+        # =========================
+
+        if current_claims >= max_claims:
+            await complete_follow_quest(
+                interaction.guild,
+                self.follow_quest_id,
+                interaction.message
+            )
+
+@bot.tree.command(name="follow_quest")
+async def follow_quest(
+        interaction: discord.Interaction
+):
+
+    allowed = False
+
+    admin_role = interaction.guild.get_role(
+        ADMIN_ROLE_ID
+    )
+
+    member_role = interaction.guild.get_role(
+        MEMBER_ROLE_ID
+    )
+
+    if admin_role in interaction.user.roles:
+        allowed = True
+
+    if member_role in interaction.user.roles:
+        allowed = True
+
+    if not allowed:
+
+        await interaction.response.send_message(
+            "❌ No permission.",
+            ephemeral=True
+        )
+
+        return
+
+    class FollowQuestModal(ui.Modal):
+
+        def __init__(self):
+            super().__init__(
+                title="Create Follow Quest"
+            )
+
+            self.quest_title = ui.TextInput(
+                label="Quest Title",
+                placeholder="Enter title",
+                required=True,
+                max_length=100
+            )
+
+            self.add_item(
+                self.quest_title
+            )
+
+            self.point_budget = ui.TextInput(
+                label="Creator Points To Spend",
+                placeholder="20,30,40,50,60,70,80,90,100",
+                required=True,
+                max_length=3
+            )
+
+            self.add_item(
+                self.point_budget
+            )
+
+        async def on_submit(
+                self,
+                modal_interaction: discord.Interaction
+        ):
+
+            cursor.execute("""
+            SELECT
+                x_username,
+                points
+            FROM users
+            WHERE user_id = ?
+            """, (
+                modal_interaction.user.id,
+            ))
+
+            user_data = cursor.fetchone()
+
+            if not user_data:
+                await modal_interaction.response.send_message(
+                    "❌ Register your X account first.",
+                    ephemeral=True
+                )
+
+                return
+
+            x_username = user_data[0]
+            current_points = user_data[1]
+
+            try:
+                budget = int(
+                    str(self.point_budget)
+                )
+
+            except:
+
+                await modal_interaction.response.send_message(
+                    "❌ Invalid amount.",
+                    ephemeral=True
+                )
+
+                return
+
+            allowed_budgets = [
+                10,
+                20,
+                30,
+                40,
+                50,
+                60,
+                70,
+                80,
+                90,
+                100
+            ]
+
+            if budget not in allowed_budgets:
+                await modal_interaction.response.send_message(
+                    "❌ Budget must be 20-100.",
+                    ephemeral=True
+                )
+
+                return
+
+            if current_points < budget:
+                await modal_interaction.response.send_message(
+                    f"❌ Need {budget} Creator Points.",
+                    ephemeral=True
+                )
+
+                return
+
+            max_claims = budget // 5
+
+            class FollowQuestConfirmView(ui.View):
+
+                def __init__(
+                        self,
+                        quest_title,
+                        budget,
+                        max_claims,
+                        x_username,
+                        modal_interaction
+                ):
+                    super().__init__(timeout=180)
+
+                    self.quest_title = quest_title
+                    self.budget = budget
+                    self.max_claims = max_claims
+                    self.x_username = x_username
+                    self.modal_interaction = modal_interaction
+
+                @ui.button(
+                    label="Run Follow Quest",
+                    style=discord.ButtonStyle.green
+                )
+                async def confirm(
+                        self,
+                        confirm_interaction: discord.Interaction,
+                        button: ui.Button
+                ):
+                    await confirm_interaction.response.defer(
+                        ephemeral=True
+                    )
+
+                    velorax_reward = self.budget // 2
+
+                    cursor.execute("""
+                    UPDATE users
+                    SET
+                        points = COALESCE(points,0) - ?,
+                        quests_created = COALESCE(quests_created,0) + 1,
+                        velorax = COALESCE(velorax,0) + ?
+                    WHERE user_id = ?
+                    """, (
+                        self.budget,
+                        velorax_reward,
+                        self.modal_interaction.user.id
+                    ))
+
+                    created_at = datetime.now(UTC)
+
+                    cursor.execute("""
+                    INSERT INTO follow_quests (
+                        title,
+                        creator_id,
+                        x_username,
+                        creator_points_spent,
+                        created_at,
+                        max_claims,
+                        current_claims,
+                        completed
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        self.quest_title,
+                        self.modal_interaction.user.id,
+                        x_username,
+                        self.budget,
+                        created_at.isoformat(),
+                        self.max_claims,
+                        0,
+                        0
+                    ))
+
+                    conn.commit()
+
+                    follow_quest_id = cursor.lastrowid
+
+                    embed = discord.Embed(
+                        title=f"Follow Quest #{follow_quest_id}",
+                        color=discord.Color.green()
+                    )
+
+                    embed.add_field(
+                        name="Creator",
+                        value=self.modal_interaction.user.mention,
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Available Claims",
+                        value=f"0/{self.max_claims}",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reward",
+                        value=":gem: +5 Creator Points",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="X Profile",
+                        value=f"[Follow Here](https://x.com/{self.x_username})",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Task",
+                        value=(
+                            "Follow this creator's X account.\n"
+                            "Then click Claim Follow Quest."
+                        ),
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reminder",
+                        value=(
+                            "⚠️ One claim only per creator.\n"
+                            "Creators may review followers."
+                        ),
+                        inline=False
+                    )
+
+                    embed.set_thumbnail(
+                        url=self.modal_interaction.user.display_avatar.url
+                    )
+
+                    guild = confirm_interaction.guild
+
+                    quest_channel = guild.get_channel(
+                        QUEST_CHANNEL
+                    )
+
+                    msg = await quest_channel.send(
+                        embed=embed,
+                        view=FollowQuestView(
+                            follow_quest_id,
+                            self.modal_interaction.user.id
+                        )
+                    )
+
+                    ping_message = await quest_channel.send(
+                        f"<@&{MEMBER_ROLE_ID}> New Follow Quest!"
+                    )
+
+                    cursor.execute("""
+                    UPDATE follow_quests
+                    SET
+                        message_id = ?,
+                        ping_message_id = ?
+                    WHERE follow_quest_id = ?
+                    """, (
+                        msg.id,
+                        ping_message.id,
+                        follow_quest_id
+                    ))
+
+                    conn.commit()
+
+                    cursor.execute("""
+                    SELECT points
+                    FROM users
+                    WHERE user_id = ?
+                    """, (
+                        self.modal_interaction.user.id,
+                    ))
+
+                    result = cursor.fetchone()
+
+                    total_points = result[0] if result else 0
+
+                    log_channel = guild.get_channel(
+                        LOGS_CHANNEL
+                    )
+
+                    if log_channel:
+                        await log_channel.send(
+                            f"**Follow Quest Created**\n\n"
+                            f"**Creator:** {self.modal_interaction.user.mention}\n"
+                            f"**Quest:** {self.quest_title}\n"
+                            f"**Spent:** :gem: -{self.budget}\n"
+                            f"**Earned:** :star2: +{velorax_reward} Velorax\n"
+                            f"**Total Creator Points:** :gem: {total_points}"
+                        )
+
+                    await confirm_interaction.edit_original_response(
+                        content=(
+                            "✅ Follow Quest created successfully."
+                        ),
+                        embed=None,
+                        view=None
+                    )
+
+            await modal_interaction.response.send_message(
+                f"⚠️ This Follow Quest will cost "
+                f":gem: {budget} Creator Points.\n\n"
+                f"Maximum Claims: {max_claims}\n\n"
+                f"Continue?",
+                view=FollowQuestConfirmView(
+                    str(self.quest_title),
+                    budget,
+                    max_claims,
+                    x_username,
+                    modal_interaction
+                ),
+                ephemeral=True
+            )
+
+    await interaction.response.send_modal(
+        FollowQuestModal()
     )
 
 # =========================
@@ -6817,18 +7721,18 @@ class ReportReviewView(ui.View):
 async def give_admin_creator_points():
 
     guild = bot.get_guild(GUILD_ID)
-
     if not guild:
         return
 
     admin_role = guild.get_role(ADMIN_ROLE_ID)
-
     if not admin_role:
         return
 
+    now = datetime.now(UTC)
     rewarded_users = []
 
-    now = datetime.now(UTC)
+    # IMPORTANT FIX: ensure full member cache
+    await guild.chunk()
 
     for member in admin_role.members:
 
@@ -6836,92 +7740,64 @@ async def give_admin_creator_points():
         SELECT last_reward
         FROM admin_daily_rewards
         WHERE user_id = ?
-        """, (
-            member.id,
-        ))
+        """, (member.id,))
 
         row = cursor.fetchone()
 
-        if row:
+        # default = always eligible
+        should_reward = True
 
-            last_reward = datetime.fromisoformat(
-                row[0]
-            )
+        if row and row[0]:
+            last_reward = datetime.fromisoformat(row[0])
 
-            elapsed = now - last_reward
+            # FIX: ensure both are timezone aware
+            if last_reward.tzinfo is None:
+                last_reward = last_reward.replace(tzinfo=UTC)
 
-            if elapsed < timedelta(hours=24):
-                continue
+            if now - last_reward < timedelta(hours=24):
+                should_reward = False
 
-        # =========================
+        if not should_reward:
+            continue
+
         # GIVE POINTS
-        # =========================
-
         cursor.execute("""
         UPDATE users
         SET points = COALESCE(points, 0) + ?
         WHERE user_id = ?
-        """, (
-            ADMIN_DAILY_CREATOR_POINTS,
-            member.id
-        ))
-
-        # =========================
-        # GET UPDATED POINTS
-        # =========================
+        """, (ADMIN_DAILY_CREATOR_POINTS, member.id))
 
         cursor.execute("""
-        SELECT points
-        FROM users
-        WHERE user_id = ?
-        """, (
-            member.id,
-        ))
-
-        result = cursor.fetchone()
-
-        updated_points = result[0] if result else 0
-
-        rewarded_users.append(
-            f"{member.mention} "
-            f"(Creator Points: {updated_points})"
-        )
-
-        # =========================
-        # SAVE REWARD TIME
-        # =========================
-
-        cursor.execute("""
-        INSERT OR REPLACE INTO admin_daily_rewards
-        (
+        INSERT OR REPLACE INTO admin_daily_rewards (
             user_id,
             last_reward
-        )
-        VALUES (?, ?)
+        ) VALUES (?, ?)
         """, (
             member.id,
             now.isoformat()
         ))
 
-    conn.commit()
+        cursor.execute("""
+        SELECT points
+        FROM users
+        WHERE user_id = ?
+        """, (member.id,))
 
-    # =========================
-    # LOG
-    # =========================
+        updated_points = cursor.fetchone()[0]
 
-    if rewarded_users:
-
-        log_channel = guild.get_channel(
-            ADMIN_LOG_CHANNEL
+        rewarded_users.append(
+            f"{member.mention} (Creator Points: {updated_points})"
         )
 
-        if log_channel:
+    conn.commit()
 
+    if rewarded_users:
+        log_channel = guild.get_channel(ADMIN_LOG_CHANNEL)
+        if log_channel:
             await log_channel.send(
                 f"<@&{ADMIN_ROLE_ID}>\n\n"
                 f"🎁 **Daily Admin Reward**\n\n"
-                f"Reward Given: "
-                f":gem: +{ADMIN_DAILY_CREATOR_POINTS} Creator Points\n\n"
+                f"Reward: +{ADMIN_DAILY_CREATOR_POINTS} Creator Points\n\n"
                 + "\n".join(rewarded_users)
             )
 
@@ -7982,6 +8858,8 @@ class GiveawayReceivedView(ui.View):
                 url=interaction.user.display_avatar.url
             )
 
+            embed.set_footer(text="Velorax Exchange System")
+
             await payout_channel.send(
                 embed=embed
             )
@@ -8132,7 +9010,7 @@ async def on_message(message):
 
         warning = await message.channel.send(
             f"{message.author.mention} "
-            f"You can only use `/create_quest` in this channel."
+            f"You can only use `/create_quest` and `/follow_quest` in this channel."
         )
 
         await asyncio.sleep(3)
@@ -8619,4 +9497,3 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
-
