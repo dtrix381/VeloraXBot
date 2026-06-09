@@ -8122,7 +8122,7 @@ class GiveawayConfirmView(ui.View):
         current_gold = result[0] if result else 0
 
         if current_gold < RAFFLE_ENTRY_COST:
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "❌ You need at least :moneybag: 1 Gold Point.",
                 ephemeral=True
             )
