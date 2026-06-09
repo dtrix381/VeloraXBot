@@ -2777,6 +2777,8 @@ class CommunityQuestView(ui.View):
             datetime.now(UTC).isoformat()
         ))
 
+        conn.commit()
+
         # =========================
         # CHECK UPDATED CLAIMS
         # =========================
@@ -3094,7 +3096,7 @@ class CommunityQuestView(ui.View):
         total_velorax = result[1] if result else 0
         total_engagements = result[2] if result else 0
 
-        conn.commit()
+
 
         # =========================
         # LOG CLAIM
@@ -3103,24 +3105,30 @@ class CommunityQuestView(ui.View):
         log_channel = guild.get_channel(LOGS_CHANNEL)
 
         if log_channel:
-            await log_channel.send(
-                f"**Quest Claimed**\n\n"
-                f"**Member:** {interaction.user.mention}\n"
-                f"**Quest:** {self.quest_title}\n\n"
-                f"**Rewards:**\n"
-                f"+1 Creator Points\n"
-                f"+1 Velorax\n\n"
-                f"**Totals:**\n"
-                f"💎 Creator Points: {total_points}\n"
-                f":star2:  Velorax: {total_velorax}"
-            )
+            try:
+                await log_channel.send(
+                    f"**Quest Claimed**\n\n"
+                    f"**Member:** {interaction.user.mention}\n"
+                    f"**Quest:** {self.quest_title}\n\n"
+                    f"**Rewards:**\n"
+                    f"+1 Creator Points\n"
+                    f"+1 Velorax\n\n"
+                    f"**Totals:**\n"
+                    f"💎 Creator Points: {total_points}\n"
+                    f":star2: Velorax: {total_velorax}"
+                )
+            except discord.HTTPException:
+                pass
 
-        await interaction.followup.send(
-            "✅ Quest claimed!\n\n"
-            "💎 +1 Creator Points\n"
-            ":star2: +1 Velorax",
-            ephemeral=True
-        )
+        try:
+            await interaction.followup.send(
+                "✅ Quest claimed!\n\n"
+                "💎 +1 Creator Points\n"
+                ":star2: +1 Velorax",
+                ephemeral=True
+            )
+        except discord.HTTPException:
+            pass
 
 
 class MyBot(commands.Bot):
@@ -5784,6 +5792,7 @@ class FollowQuestView(ui.View):
                 datetime.now(UTC).isoformat()
             ))
 
+
             current_claims += 1
 
             completed_flag = (
@@ -6377,7 +6386,7 @@ class ConfirmExchangeView(ui.View):
             confirm_interaction: discord.Interaction,
             button: ui.Button
     ):
-
+        await confirm_interaction.response.defer()
         # =========================
         # REMOVE GOLD
         # =========================
@@ -6528,7 +6537,7 @@ class ConfirmExchangeView(ui.View):
                 f"**Remaining Gold:** :moneybag: {remaining_gold}"
             )
 
-        await confirm_interaction.response.edit_message(
+        await confirm_interaction.edit_original_response(
             content=(
                 f"✅ Exchange request created:\n"
                 f"{support_channel.mention}"
@@ -6801,6 +6810,8 @@ class PayoutConfirmView(ui.View):
     )
     async def yes(self, interaction: discord.Interaction, button: ui.Button):
 
+        await interaction.response.defer()
+
         parts = {}
 
         for item in interaction.channel.topic.split("|"):
@@ -6875,7 +6886,7 @@ class PayoutConfirmView(ui.View):
             # ✅ THIS WAS MISSING
             await payout_channel.send(embed=embed)
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content="✅ Payout confirmed.",
             embed=None,
             view=None
@@ -8072,6 +8083,8 @@ class GiveawayConfirmView(ui.View):
             button: discord.ui.Button
     ):
 
+        await interaction.response.defer()
+
         # =========================
         # ALREADY ENTERED
         # =========================
@@ -8184,7 +8197,7 @@ class GiveawayConfirmView(ui.View):
                 f"Remaining Gold: :moneybag: {remaining_gold}"
             )
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content="✅ Raffle entry submitted.",
             view=None
         )
@@ -9493,6 +9506,7 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
+
 
 # Run the bot
 if __name__ == "__main__":
