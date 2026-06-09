@@ -8100,7 +8100,7 @@ class GiveawayConfirmView(ui.View):
         ))
 
         if cursor.fetchone():
-            return await interaction.response.send_message(
+            return await interaction.followup.send(
                 "❌ You already entered this giveaway.",
                 ephemeral=True
             )
