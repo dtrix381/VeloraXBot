@@ -1559,7 +1559,7 @@ class ApprovalView(ui.View):
 
                 cursor.execute("""
                 UPDATE users
-                SET gold_points = gold_points + 5
+                SET gold_points = gold_points + 1
                 WHERE user_id = ?
                 """, (inviter_id,))
 
@@ -3556,7 +3556,7 @@ async def setup(interaction: discord.Interaction):
             value="quote_retweet"
         ),
         app_commands.Choice(
-            name="Tweet = 100 Gold Points",
+            name="Tweet = 80 Gold Points",
             value="tweet"
         )
     ]
@@ -3693,7 +3693,7 @@ async def paid_quest(
                 },
 
                 "tweet": {
-                    "points": 100,
+                    "points": 80,
                     "task": (
                         "Create a Tweet about the Project "
                         "and Submit Tweet Link"
