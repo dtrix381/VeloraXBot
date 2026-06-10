@@ -4024,7 +4024,7 @@ async def send_random_announcement():
 # LOOP
 # ========================================
 
-@tasks.loop(minutes=30)
+@tasks.loop(minutes=240)
 async def reminder_loop():
 
     await send_random_announcement()
