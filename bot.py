@@ -25,6 +25,7 @@ SECOND_OFFENSE_ROLE = 1507613855587766302
 WAITING_ROOM_CHANNEL = 1510492366660833350
 ADMIN_LOG_CHANNEL = 1501476619641163927
 ADMIN_DAILY_CREATOR_POINTS = 150
+REMINDER_CHANNEL_ID = 1501478302102323210
 
 CATEGORY_NAME = 1507640053315407904
 REGISTER_CHANNEL = 1507640055680733244
@@ -3876,6 +3877,157 @@ async def paid_quest(
     await interaction.response.send_modal(
         QuestModal(quest_type.value)
     )
+
+
+ANNOUNCEMENTS = [
+
+    # Message 1
+    f"""
+📢 Looking for points?
+
+Use `/available_tasks` in <#{AVAILABLE_QUEST_CHANNEL}> to see all active quests currently available to claim.
+
+You can also browse <#{AVAILABLE_QUEST_CHANNEL}> for the latest opportunities.
+
+Complete quests to earn:
+💎 Creator Points
+⭐ VeloraX Points
+
+The faster you claim, the better your chances before slots fill up.
+    """,
+
+    # Message 2
+    f"""
+💳 Understanding Our Point System
+
+💎 Creator Points
+• Earn by completing quests in <#{QUEST_CHANNEL}>
+• Spend them to create your own quests
+• Use `/create_quest` to launch campaigns
+
+🪙 Gold Points
+• Earn from <#{PAID_QUEST_CHANNEL}> submissions
+• Earn from successful referrals
+• Exchange for real cash rewards in <#{SHOP_CHANNEL}>
+
+100 Gold Points = $10 USD
+    """,
+
+    # Message 3
+    """
+👥 Want to grow your X account?
+
+Use `/follow_quest` to gain followers from other community members.
+
+Each completed follow is worth:
+💎 +5 Creator Points to the creator
+
+This is one of the fastest ways to increase followers, engagement, and visibility on X.
+    """,
+
+    # Message 4
+    """
+⭐ How VeloraX Points Work
+
+You earn VeloraX by:
+
+• Completing quests → +1 VeloraX each
+• Hosting quests → Earn 50% of Creator Points spent
+
+Example:
+Host a 20-claim quest
+Spend 20 Creator Points
+Receive ⭐ 10 VeloraX
+
+🏆 VeloraX Leaderboard Eligibility
+
+To qualify for the monthly VeloraX Leaderboard, you must spend at least 300 Creator Points on quests during the current month.
+
+Use `/velorax_leaderboard` to view the rankings.
+
+Top 10 creators receive a $20 reward.
+    """,
+
+    # Message 5
+    f"""
+🚀 Promote Your Own Posts
+
+Use `/create_quest` in <#{QUEST_CHANNEL}> to launch engagement campaigns.
+
+Requirements:
+• Minimum 10 claim slots
+• 1 Creator Point per claim
+• Users receive rewards instantly after claiming
+
+After completion, a review thread is automatically created showing everyone who claimed your quest.
+
+Always review your claimers.
+    """,
+
+    # Message 6
+    f"""
+⚠️ Protect Your Creator Points
+
+If someone claims your quest without completing the required task:
+
+1. Go to <#{REPORT_CHANNEL}>
+2. Use `/report`
+3. Submit evidence
+
+Our admin team will investigate.
+
+Strike System:
+• Repeated abuse results in point deductions
+• 3rd strike = permanent ban
+
+Help keep the ecosystem fair for everyone.
+    """
+]
+
+# ========================================
+# RANDOM POOL
+# ========================================
+
+announcement_pool = []
+
+# ========================================
+# SEND RANDOM ANNOUNCEMENT
+# ========================================
+
+async def send_random_announcement():
+
+    global announcement_pool
+
+    channel = bot.get_channel(
+        REMINDER_CHANNEL_ID
+    )
+
+    if not channel:
+        return
+
+    # Refill pool when empty
+    if not announcement_pool:
+
+        announcement_pool = (
+            ANNOUNCEMENTS.copy()
+        )
+
+        random.shuffle(
+            announcement_pool
+        )
+
+    message = announcement_pool.pop()
+
+    await channel.send(message)
+
+# ========================================
+# LOOP
+# ========================================
+
+@tasks.loop(minutes=30)
+async def reminder_loop():
+
+    await send_random_announcement()
 
 # =========================
 # UPDATE QUEST STATUS
@@ -9471,6 +9623,12 @@ async def on_ready():
     if not update_quests.is_running():
         update_quests.start()
 
+    if not reminder_loop.is_running():
+        reminder_loop.start()
+
+        # Send one immediately on startup
+        await send_random_announcement()
+        
     if not giveaway_loop.is_running():
         giveaway_loop.start()
 
@@ -9506,7 +9664,6 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
-
 
 # Run the bot
 if __name__ == "__main__":
