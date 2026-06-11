@@ -464,25 +464,75 @@ class XModal(ui.Modal, title="Connect Your X"):
                 interaction.user.id
             ))
 
+
         else:
 
-            # Brand new user: safe to award 25 points
+            approval_channel = interaction.guild.get_channel(
+
+                INVITE_APPROVAL_CHANNEL_ID
+
+            )
+
+            if approval_channel:
+
+                async for msg in approval_channel.history(limit=500):
+
+                    if not msg.embeds:
+                        continue
+
+                    existing_embed = msg.embeds[0]
+
+                    for field in existing_embed.fields:
+
+                        if (
+
+                                field.name == "User ID"
+
+                                and field.value == str(interaction.user.id)
+
+                        ):
+                            await interaction.followup.send(
+
+                                "❌ You already have a pending creator application.",
+
+                                ephemeral=True
+
+                            )
+
+                            return
+
             is_new_user = True
+
             cursor.execute("""
+
                     INSERT INTO users (
+
                         user_id,
+
                         x_username,
+
                         x_username_lower,
+
                         points,
+
                         gold_points,
+
                         quests_completed,
+
                         quests_denied
+
                     )
+
                     VALUES (?, ?, ?, 0, 0, 0, 0)
+
                     """, (
+
                 interaction.user.id,
+
                 original_username,
+
                 lowercase_username
+
             ))
 
         conn.commit()
@@ -10530,3 +10580,4 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
+
