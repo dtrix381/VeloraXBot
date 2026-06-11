@@ -11,6 +11,7 @@ from openpyxl import Workbook
 import random
 
 GUILD_ID = 1501471671360553131
+VELORAX_X_USERNAME = "VeloraX_Labs"
 GUILD_OWNER_ID = 488015447417946151
 ADMIN_ROLE_ID = 1501472062903156756  # Team
 MEMBER_ROLE_ID = 1501473138188353616  # Creator
@@ -2597,6 +2598,9 @@ async def load_persistent_views():
     bot.add_view(GiveawayEntryView())
     bot.add_view(GiveawayPayoutView())
     bot.add_view(GiveawayReceivedView())
+    bot.add_view(LeaderboardPayoutView())
+    bot.add_view(LeaderboardReceivedView())
+    bot.add_view(FollowVeloraxView())
 
     cursor.execute("""
     SELECT giveaway_id
@@ -2652,7 +2656,16 @@ class CommunityQuestView(ui.View):
             button: ui.Button
     ):
 
-        await interaction.response.defer(ephemeral=True)
+        try:
+            await interaction.response.defer(
+                ephemeral=True
+            )
+        except discord.NotFound:
+            return
+        except discord.InteractionResponded:
+            pass
+        except discord.HTTPException:
+            pass
 
         # =========================
         # CHECK DUPLICATE CLAIM
@@ -2673,10 +2686,13 @@ class CommunityQuestView(ui.View):
         existing_claim = cursor.fetchone()
 
         if existing_claim:
-            await interaction.followup.send(
-                "❌ You already claimed this quest.",
-                ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ You already claimed this quest.",
+                    ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
 
             return
 
@@ -2700,10 +2716,13 @@ class CommunityQuestView(ui.View):
         quest_data = cursor.fetchone()
 
         if not quest_data:
-            await interaction.followup.send(
-                "Quest not found.",
-                ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "Quest not found.",
+                    ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
             return
 
         created_by = quest_data[0]
@@ -2719,10 +2738,13 @@ class CommunityQuestView(ui.View):
         # =========================
 
         if interaction.user.id == created_by:
-            await interaction.followup.send(
-                "❌ You cannot claim your own quest.",
-                ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ You cannot claim your own quest.",
+                    ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
             return
 
         # =========================
@@ -2730,10 +2752,13 @@ class CommunityQuestView(ui.View):
         # =========================
 
         if completed or current_claims >= max_claims:
-            await interaction.followup.send(
-                "❌ This quest is already completed.",
-                ephemeral=True
-            )
+            try:
+                await interaction.followup.send(
+                    "❌ This quest is already completed.",
+                    ephemeral=True
+                )
+            except discord.HTTPException:
+                pass
             return
 
         # =========================
@@ -3879,6 +3904,41 @@ async def paid_quest(
     )
 
 
+def get_next_leaderboard_end_timestamp():
+
+    now = datetime.now(UTC)
+
+    year = now.year
+    month = now.month
+
+    draw_time = datetime(
+        year,
+        month,
+        22,
+        12,   # 12 UTC = 8PM Philippines
+        0,
+        tzinfo=UTC
+    )
+
+    if now >= draw_time:
+
+        if month == 12:
+            year += 1
+            month = 1
+        else:
+            month += 1
+
+        draw_time = datetime(
+            year,
+            month,
+            22,
+            12,
+            0,
+            tzinfo=UTC
+        )
+
+    return int(draw_time.timestamp())
+
 ANNOUNCEMENTS = [
 
     # Message 1
@@ -3926,7 +3986,7 @@ This is one of the fastest ways to increase followers, engagement, and visibilit
     """,
 
     # Message 4
-    """
+    f"""
 ⭐ How VeloraX Points Work
 
 You earn VeloraX by:
@@ -3945,8 +4005,13 @@ To qualify for the monthly VeloraX Leaderboard, you must spend at least 300 Crea
 
 Use `/velorax_leaderboard` to view the rankings.
 
-Top 10 creators receive a $20 reward.
-    """,
+⏳ Current leaderboard ends:
+
+<t:{get_next_leaderboard_end_timestamp()}:F>
+(<t:{get_next_leaderboard_end_timestamp()}:R>)
+
+🏆 Top 10 eligible creators receive $20 each.
+""",
 
     # Message 5
     f"""
@@ -3955,7 +4020,7 @@ Top 10 creators receive a $20 reward.
 Use `/create_quest` in <#{QUEST_CHANNEL}> to launch engagement campaigns.
 
 Requirements:
-• Minimum 10 claim slots
+• Minimum 20 claim slots
 • 1 Creator Point per claim
 • Users receive rewards instantly after claiming
 
@@ -3981,7 +4046,26 @@ Strike System:
 • 3rd strike = permanent ban
 
 Help keep the ecosystem fair for everyone.
+    """,
+
+    # Message 7
+    f"""
+📈 Invite Referral Reward Update
+
+To ensure community quality and reward active Creators, our referral system has been updated:
+
+1. Your invited creator is approved
+2. Your 1 Gold Point reward enters PENDING status
+3. The point unlocks once they complete their first Paid Quest
+
+⚠️ Important Notice:
+• Gold Points can be exchanged for real cash (100 Points = $10)
+• Rewards are only released for active community contributors
+• Inactive invites will keep the point locked indefinitely
+
+Bring in active creators, support each other, and maximize your earnings.
     """
+
 ]
 
 # ========================================
@@ -3997,6 +4081,8 @@ announcement_pool = []
 async def send_random_announcement():
 
     global announcement_pool
+
+    end_ts = get_next_leaderboard_end_timestamp()
 
     channel = bot.get_channel(
         REMINDER_CHANNEL_ID
@@ -4023,8 +4109,129 @@ async def send_random_announcement():
 # ========================================
 # LOOP
 # ========================================
+@tasks.loop(minutes=1)
+async def monthly_leaderboard_scheduler():
 
-@tasks.loop(minutes=240)
+    now = datetime.now(UTC)
+
+    # 22nd day of month
+    if now.day != 22:
+        return
+
+    # 12:00 UTC = 8PM Philippines
+    if now.hour != 12:
+        return
+
+    if now.minute != 0:
+        return
+
+    try:
+        await run_monthly_leaderboard_draw(bot)
+
+    except Exception as e:
+        print(
+            f"Monthly leaderboard draw failed: {e}"
+        )
+
+@tasks.loop(hours=1)
+async def offense_expiration_loop():
+
+    guild = bot.get_guild(GUILD_ID)
+
+    if not guild:
+        return
+
+    first_role = guild.get_role(FIRST_OFFENSE_ROLE)
+    second_role = guild.get_role(SECOND_OFFENSE_ROLE)
+
+    report_channel = guild.get_channel(REPORT_CHANNEL)
+
+    cursor.execute("""
+    SELECT id, user_id, offense_type, expires_at
+    FROM offense_timers
+    """)
+
+    rows = cursor.fetchall()
+
+    now = datetime.now(UTC)
+
+    for timer_id, user_id, offense_type, expires_at in rows:
+
+        expires_at = datetime.fromisoformat(expires_at)
+
+        if now < expires_at:
+            continue
+
+        member = guild.get_member(user_id)
+
+        if not member:
+            cursor.execute("""
+            DELETE FROM offense_timers
+            WHERE id = ?
+            """, (timer_id,))
+            conn.commit()
+            continue
+
+        # SECOND OFFENSE EXPIRES
+        if offense_type == "second":
+
+            if second_role in member.roles:
+                await member.remove_roles(second_role)
+
+            if report_channel:
+                await report_channel.send(
+                    f"✅ {member.mention}'s Second Offense has been removed.\n"
+                    f"📅 No additional penalties were received for 30 days.\n"
+                    f"⏳ First Offense timer has now started."
+                )
+
+            cursor.execute("""
+            DELETE FROM offense_timers
+            WHERE id = ?
+            """, (timer_id,))
+
+            cursor.execute("""
+            INSERT INTO offense_timers (
+                user_id,
+                offense_type,
+                expires_at
+            )
+            VALUES (?, ?, ?)
+            """, (
+                user_id,
+                "first",
+                (
+                    datetime.now(UTC) +
+                    timedelta(days=30)
+                ).isoformat()
+            ))
+
+            conn.commit()
+
+
+        # FIRST OFFENSE EXPIRES
+        elif offense_type == "first":
+
+            if first_role in member.roles:
+                await member.remove_roles(first_role)
+
+            if report_channel:
+                await report_channel.send(
+                    f"🎉 OFFENSE CLEARED\n\n"
+                    f"👤 {member.mention}\n"
+                    f"✅ First Offense removed.\n"
+                    f"📅 User remained penalty-free for 30 days.\n"
+                    f"🟢 User is now completely clear of penalties."
+                )
+
+            cursor.execute("""
+            DELETE FROM offense_timers
+            WHERE id = ?
+            """, (timer_id,))
+
+            conn.commit()
+
+@tasks.loop(minutes=120)
 async def reminder_loop():
 
     await send_random_announcement()
@@ -4308,6 +4515,46 @@ async def profile(
 
     x_username, points, gold_points, completed, denied, engagements, quests_created, velorax = data
 
+    cursor.execute("""
+    SELECT offense_type, expires_at
+    FROM offense_timers
+    WHERE user_id = ?
+    """, (
+        member.id,
+    ))
+
+    offense_data = cursor.fetchone()
+
+    penalty_text = "✅ No Active Penalties"
+
+    if offense_data:
+
+        offense_type, expires_at = offense_data
+
+        expires_at = datetime.fromisoformat(
+            expires_at
+        )
+
+        expiry_ts = int(
+            expires_at.timestamp()
+        )
+
+        if offense_type == "first":
+
+            penalty_text = (
+                "⚠️ First Offense\n"
+                f"Expires: <t:{expiry_ts}:F>\n"
+                f"(<t:{expiry_ts}:R>)"
+            )
+
+        elif offense_type == "second":
+
+            penalty_text = (
+                "🚨 Second Offense\n"
+                f"Expires: <t:{expiry_ts}:F>\n"
+                f"(<t:{expiry_ts}:R>)"
+            )
+
     filtered_users = []
 
     cursor.execute("""
@@ -4422,6 +4669,12 @@ async def profile(
     embed.add_field(
         name="Leaderboard Eligibility",
         value=eligibility_text,
+        inline=False
+    )
+
+    embed.add_field(
+        name="Penalty Status",
+        value=penalty_text,
         inline=False
     )
 
@@ -5826,7 +6079,7 @@ class FollowQuestView(ui.View):
     @ui.button(
         label="Claim Follow Quest",
         style=discord.ButtonStyle.green,
-        custom_id="follow_quest_claim"
+        custom_id="follow_velorax_claim"
     )
     async def claim(
             self,
@@ -5834,39 +6087,33 @@ class FollowQuestView(ui.View):
             button: ui.Button
     ):
 
-        # =========================
-        # CREATOR CANNOT CLAIM OWN
-        # =========================
+        # Must be registered
+        cursor.execute("""
+        SELECT 1
+        FROM users
+        WHERE user_id = ?
+        """, (
+            interaction.user.id,
+        ))
 
-        if interaction.user.id == self.creator_id:
-
-            await interaction.response.send_message(
-                "❌ You cannot claim your own Follow Quest.",
+        if not cursor.fetchone():
+            return await interaction.response.send_message(
+                "❌ Register your X account first.",
                 ephemeral=True
             )
 
-            return
-
-        # =========================
-        # ALREADY CLAIMED THIS CREATOR
-        # =========================
-
+        # Already claimed?
         cursor.execute("""
         SELECT 1
-        FROM follow_claims
-        WHERE creator_id = ?
-        AND claimer_id = ?
+        FROM velorax_follow_claims
+        WHERE user_id = ?
         """, (
-            self.creator_id,
-            interaction.user.id
+            interaction.user.id,
         ))
 
-        already_claimed = cursor.fetchone()
-
-        if already_claimed:
-
-            await interaction.response.send_message(
-                "❌ You already claimed a Follow Quest from this creator.",
+        if cursor.fetchone():
+            return await interaction.response.send_message(
+                "❌ You already claimed this quest.",
                 ephemeral=True
             )
 
@@ -7507,6 +7754,8 @@ class ReportReviewView(ui.View):
 
         member = guild.get_member(reported_user)
 
+        logs_channel = guild.get_channel(LOGS_CHANNEL)
+
         if not member:
             return await interaction.response.send_message(
                 "User not found.",
@@ -7534,6 +7783,42 @@ class ReportReviewView(ui.View):
         if first_role not in member.roles:
 
             await member.add_roles(first_role)
+
+            cursor.execute("""
+            DELETE FROM offense_timers
+            WHERE user_id = ?
+            """, (
+                member.id,
+            ))
+
+            cursor.execute("""
+            INSERT INTO offense_timers (
+                user_id,
+                offense_type,
+                expires_at
+            )
+            VALUES (?, ?, ?)
+            """, (
+                member.id,
+                "first",
+                (
+                        datetime.now(UTC) +
+                        timedelta(days=30)
+                ).isoformat()
+            ))
+
+            conn.commit()
+
+            expires = datetime.now(UTC) + timedelta(days=30)
+
+            if logs_channel:
+                await logs_channel.send(
+                    f"⏳ OFFENSE TIMER STARTED\n\n"
+                    f"👤 User: {member.mention}\n"
+                    f"⚠️ Type: First Offense\n"
+                    f"📅 Expires: <t:{int(expires.timestamp())}:F>\n"
+                    f"🗑 Role will automatically be removed if no further penalties occur."
+                )
 
             # =========================
             # DEDUCT 2 POINTS
@@ -7631,6 +7916,42 @@ class ReportReviewView(ui.View):
         elif second_role not in member.roles:
 
             await member.add_roles(second_role)
+
+            cursor.execute("""
+            DELETE FROM offense_timers
+            WHERE user_id = ?
+            """, (
+                member.id,
+            ))
+
+            cursor.execute("""
+            INSERT INTO offense_timers (
+                user_id,
+                offense_type,
+                expires_at
+            )
+            VALUES (?, ?, ?)
+            """, (
+                member.id,
+                "second",
+                (
+                        datetime.now(UTC) +
+                        timedelta(days=30)
+                ).isoformat()
+            ))
+
+            conn.commit()
+
+            expires = datetime.now(UTC) + timedelta(days=30)
+
+            if logs_channel:
+                await logs_channel.send(
+                    f"⏳ OFFENSE TIMER RESET\n\n"
+                    f"👤 User: {member.mention}\n"
+                    f"⚠️ Type: Second Offense\n"
+                    f"📅 Expires: <t:{int(expires.timestamp())}:F>\n\n"
+                    f"First Offense timer is paused until Second Offense expires."
+                )
 
             # =========================
             # DEDUCT 2 POINTS
@@ -7817,6 +8138,30 @@ class ReportReviewView(ui.View):
                     value=status,
                     inline=False
                 )
+
+                if status == "First Offense":
+                    expires = datetime.now(UTC) + timedelta(days=30)
+
+                    embed.add_field(
+                        name="⏳ Offense Expires",
+                        value=f"<t:{int(expires.timestamp())}:F>",
+                        inline=False
+                    )
+
+                elif status == "Second Offense":
+                    expires = datetime.now(UTC) + timedelta(days=30)
+
+                    embed.add_field(
+                        name="⏳ Second Offense Expires",
+                        value=f"<t:{int(expires.timestamp())}:F>",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="📌 First Offense Status",
+                        value="Timer paused until Second Offense expires",
+                        inline=False
+                    )
 
                 embed.add_field(
                     name="📉 Point Deduction",
@@ -8135,6 +8480,166 @@ async def clear_channel(interaction: discord.Interaction):
     await interaction.response.send_message(
         "⚠️ Are you sure you want to clear ALL messages in this channel?",
         view=ClearChannelConfirmView(),
+        ephemeral=True
+    )
+
+
+class FollowVeloraxView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(
+        label="Claim Follow Quest",
+        style=discord.ButtonStyle.green,
+        custom_id="follow_velorax_claim"
+    )
+    async def claim(
+        self,
+        interaction: discord.Interaction,
+        button: ui.Button
+    ):
+
+        cursor.execute("""
+        SELECT 1
+        FROM velorax_follow_claims
+        WHERE user_id = ?
+        """, (
+            interaction.user.id,
+        ))
+
+        if cursor.fetchone():
+
+            return await interaction.response.send_message(
+                "❌ You already claimed this quest.",
+                ephemeral=True
+            )
+
+        cursor.execute("""
+        INSERT INTO velorax_follow_claims (
+            user_id
+        )
+        VALUES (?)
+        """, (
+            interaction.user.id,
+        ))
+
+        cursor.execute("""
+        UPDATE users
+        SET points = COALESCE(points,0) + 5
+        WHERE user_id = ?
+        """, (
+            interaction.user.id,
+        ))
+
+        conn.commit()
+
+        log_channel = interaction.guild.get_channel(
+            LOGS_CHANNEL
+        )
+
+        if log_channel:
+            cursor.execute("""
+            SELECT points
+            FROM users
+            WHERE user_id = ?
+            """, (
+                interaction.user.id,
+            ))
+
+            result = cursor.fetchone()
+
+            total_points = result[0] if result else 0
+
+            await log_channel.send(
+                f"⭐ **VeloraX Follow Quest Claimed**\n\n"
+                f"User: {interaction.user.mention}\n"
+                f"Reward: 💎 +5 Creator Points\n"
+                f"Total Creator Points: 💎 {total_points}"
+            )
+
+        await interaction.response.send_message(
+            "✅ Follow quest claimed.\n\n"
+            "You earned 💎 +5 Creator Points.",
+            ephemeral=True
+        )
+
+@bot.tree.command(name="follow_velorax")
+async def follow_velorax(
+    interaction: discord.Interaction
+):
+    admin_role = interaction.guild.get_role(
+        ADMIN_ROLE_ID
+    )
+
+    if admin_role not in interaction.user.roles:
+        return await interaction.response.send_message(
+            "Admins only.",
+            ephemeral=True
+        )
+    embed = discord.Embed(
+        title="⭐ Follow VeloraX Labs",
+        color=discord.Color.green()
+    )
+
+    embed.add_field(
+        name="Reward",
+        value="💎 +5 Creator Points",
+        inline=False
+    )
+
+    embed.add_field(
+        name="X Profile",
+        value=f"https://x.com/{VELORAX_X_USERNAME}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Task",
+        value=(
+            "Follow the official VeloraX account.\n"
+            "Then click Claim Follow Quest."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="Important",
+        value=(
+            "⚠️ Can only be claimed ONCE EVER.\n"
+            "⚠️ Admin may verify follows."
+        ),
+        inline=False
+    )
+
+    embed.set_thumbnail(
+        url=bot.user.display_avatar.url
+    )
+
+    quest_channel = interaction.guild.get_channel(
+        REMINDER_CHANNEL_ID
+    )
+
+    msg = await quest_channel.send(
+        content=f"<@&{MEMBER_ROLE_ID}>",
+        embed=embed,
+        view=FollowVeloraxView()
+    )
+
+    log_channel = interaction.guild.get_channel(
+        LOGS_CHANNEL
+    )
+
+    if log_channel:
+        await log_channel.send(
+            f"⭐ **VeloraX Follow Quest Posted**\n\n"
+            f"Posted By: {interaction.user.mention}\n"
+            f"Reward: 💎 +5 Creator Points\n"
+            f"X Account: https://x.com/{VELORAX_X_USERNAME}"
+        )
+
+    await interaction.response.send_message(
+        "✅ VeloraX Follow Quest posted.",
         ephemeral=True
     )
 
@@ -9035,6 +9540,357 @@ class GiveawayReceivedView(ui.View):
             view=None
         )
 
+async def run_monthly_leaderboard_draw(bot):
+
+    guild = bot.get_guild(GUILD_ID)
+
+    if not guild:
+        return
+
+    month_key = datetime.now(UTC).strftime("%Y-%m")
+
+    cursor.execute("""
+    SELECT draw_month
+    FROM leaderboard_draws
+    WHERE draw_month = ?
+    """, (month_key,))
+
+    if cursor.fetchone():
+        return
+
+    cursor.execute("""
+    SELECT
+        user_id,
+        x_username,
+        points,
+        engagements,
+        quests_created,
+        velorax
+    FROM users
+    ORDER BY
+        velorax DESC,
+        engagements DESC,
+        quests_created DESC,
+        points DESC
+    """)
+
+    users = cursor.fetchall()
+
+    winners = []
+
+    for (
+        user_id,
+        x_username,
+        points,
+        engagements,
+        quests_created,
+        velorax
+    ) in users:
+
+        member = guild.get_member(user_id)
+
+        if not member:
+            continue
+
+        if not any(
+            role.id == MEMBER_ROLE_ID
+            for role in member.roles
+        ):
+            continue
+
+        if any(
+            role.id == ADMIN_ROLE_ID
+            for role in member.roles
+        ):
+            continue
+
+        hosted_points = max(
+            0,
+            (velorax - engagements) * 2
+        )
+
+        if hosted_points < 300:
+            continue
+
+        winners.append(
+            (
+                member,
+                x_username,
+                velorax
+            )
+        )
+
+        if len(winners) >= 10:
+            break
+
+    if len(winners) == 0:
+        return
+
+    reminder_channel = guild.get_channel(
+        REMINDER_CHANNEL_ID
+    )
+
+    winner_text = "\n".join(
+        [
+            f"{i+1}. {winner[0].mention}"
+            for i, winner in enumerate(winners)
+        ]
+    )
+
+    await reminder_channel.send(
+        "🏆 **MONTHLY VELORAX LEADERBOARD WINNERS** 🏆\n\n"
+        "Congratulations!\n\n"
+        f"{winner_text}"
+    )
+
+    category = guild.get_channel(
+        SUPPORT_CATEGORY_ID
+    )
+
+    admin_role = guild.get_role(
+        ADMIN_ROLE_ID
+    )
+
+    for (
+        winner,
+        x_username,
+        velorax
+    ) in winners:
+
+        overwrites = {
+
+            guild.default_role:
+                discord.PermissionOverwrite(
+                    view_channel=False
+                ),
+
+            winner:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True,
+                    read_message_history=True
+                ),
+
+            admin_role:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True
+                ),
+
+            guild.me:
+                discord.PermissionOverwrite(
+                    view_channel=True,
+                    send_messages=True
+                )
+        }
+
+        channel_name = (
+            f"leaderboard-{x_username.lower()}"
+        )[:100]
+
+        ticket = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites
+        )
+
+        await ticket.edit(
+            topic=f"winner:{winner.id}|type:leaderboard"
+        )
+
+        embed = discord.Embed(
+            title="🏆 Monthly Leaderboard Winner",
+            description=(
+                f"{winner.mention}\n\n"
+                "Congratulations!\n"
+                "You finished in the Top 10."
+            ),
+            color=discord.Color.gold()
+        )
+
+        embed.add_field(
+            name="Velorax",
+            value=str(velorax),
+            inline=False
+        )
+
+        await ticket.send(
+            content=(
+                f"{winner.mention} "
+                f"<@&{ADMIN_ROLE_ID}>"
+            ),
+            embed=embed,
+            view=LeaderboardPayoutView()
+        )
+
+        cursor.execute("""
+        INSERT INTO leaderboard_draws (
+            draw_month
+        )
+        VALUES (?)
+        """, (
+            month_key,
+        ))
+
+        conn.commit()
+
+        cursor.execute("""
+        UPDATE users
+        SET velorax = 0
+        """)
+
+        conn.commit()
+
+        logs_channel = guild.get_channel(
+            LOGS_CHANNEL
+        )
+
+        if logs_channel:
+            await logs_channel.send(
+                f"🏆 VeloraX Monthly leaderboard ended.\n\n"
+                f"Winners: {len(winners)}\n"
+                f"Month: {month_key}\n\n"
+                f"VeloraX leaderboard has been reset."
+            )
+
+class LeaderboardPayoutView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Start Payout",
+        style=discord.ButtonStyle.green,
+        custom_id="leaderboard_start_payout"
+    )
+    async def payout(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        admin_role = interaction.guild.get_role(
+            ADMIN_ROLE_ID
+        )
+
+        if admin_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "Admins only.",
+                ephemeral=True
+            )
+
+        topic = interaction.channel.topic
+
+        parts = {}
+
+        for item in topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["winner"])
+
+        winner = interaction.guild.get_member(
+            winner_id
+        )
+
+        embed = discord.Embed(
+            title="🏆 Leaderboard Prize",
+            description=(
+                f"{winner.mention}\n\n"
+                "Please confirm once reward is received."
+            ),
+            color=discord.Color.green()
+        )
+
+        await interaction.channel.edit(
+            topic=(
+                f"{topic}|admin:{interaction.user.id}"
+            )
+        )
+
+        await interaction.response.send_message(
+            content=winner.mention,
+            embed=embed,
+            view=LeaderboardReceivedView()
+        )
+
+class LeaderboardReceivedView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="✅ I Received It",
+        style=discord.ButtonStyle.green,
+        custom_id="leaderboard_received"
+    )
+    async def received(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["winner"])
+
+        if interaction.user.id != winner_id:
+            return await interaction.response.send_message(
+                "Only the winner can confirm.",
+                ephemeral=True
+            )
+
+        admin_id = int(parts["admin"])
+
+        admin = interaction.guild.get_member(
+            admin_id
+        )
+
+        payout_channel = interaction.guild.get_channel(
+            APPROVAL_CHANNEL
+        )
+
+        if payout_channel:
+
+            embed = discord.Embed(
+                title="🏆 Monthly Leaderboard Paid",
+                color=discord.Color.green()
+            )
+
+            embed.add_field(
+                name="Winner",
+                value=interaction.user.mention,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Handled By",
+                value=(
+                    admin.mention
+                    if admin
+                    else "Unknown"
+                ),
+                inline=False
+            )
+
+            embed.set_thumbnail(
+                url=interaction.user.display_avatar.url
+            )
+
+            await payout_channel.send(
+                embed=embed
+            )
+
+        await interaction.response.edit_message(
+            content="✅ Reward confirmed received.",
+            embed=None,
+            view=None
+        )
+
 # =========================
 # DELETE MESSAGES
 # =========================
@@ -9623,12 +10479,18 @@ async def on_ready():
     if not update_quests.is_running():
         update_quests.start()
 
+    if not monthly_leaderboard_scheduler.is_running():
+        monthly_leaderboard_scheduler.start()
+
     if not reminder_loop.is_running():
         reminder_loop.start()
 
         # Send one immediately on startup
         await send_random_announcement()
-        
+
+    if not offense_expiration_loop.is_running():
+        offense_expiration_loop.start()
+
     if not giveaway_loop.is_running():
         giveaway_loop.start()
 
