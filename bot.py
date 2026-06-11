@@ -1596,7 +1596,7 @@ class ApprovalView(ui.View):
                             f"🎉 **Invite Reward Released**\n\n"
                             f"👤 **Creator:** <@{self.user_id}>\n"
                             f"👑 **Inviter:** {inviter.mention}\n\n"
-                            f"💰 **Reward Earned:** :moneybag: +5 Gold Points\n"
+                            f"💰 **Reward Earned:** :moneybag: +1 Gold Points\n"
                             f"📊 **Inviter Total Gold:** :moneybag: {total_gold}\n\n"
                             f"✅ Triggered after the creator's first approved paid quest."
                         )
