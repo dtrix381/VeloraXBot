@@ -47,6 +47,7 @@ GOLD_LEADERBOARD_CHANNEL = 1507640098521481236
 SHOP_CHANNEL = 1507640118616391802
 APPROVAL_CHANNEL = 1507640094951997460
 
+MAX_GIVEAWAY_ENTRIES = 3
 RAFFLE_CHANNEL = 1511554965938901023
 RAFFLE_PRIZE = "$10"
 RAFFLE_ENTRY_COST = 1
@@ -2648,6 +2649,8 @@ async def load_persistent_views():
     bot.add_view(GiveawayEntryView())
     bot.add_view(GiveawayPayoutView())
     bot.add_view(GiveawayReceivedView())
+    bot.add_view(RaffleCloseTicketView())
+    bot.add_view(RaffleClosedTicketView())
     bot.add_view(LeaderboardPayoutView())
     bot.add_view(LeaderboardReceivedView())
     bot.add_view(FollowVeloraxView())
@@ -4566,6 +4569,22 @@ async def profile(
     x_username, points, gold_points, completed, denied, engagements, quests_created, velorax = data
 
     cursor.execute("""
+    SELECT total_earned
+    FROM creator_earnings
+    WHERE user_id = ?
+    """, (
+        member.id,
+    ))
+
+    earned_data = cursor.fetchone()
+
+    total_earned = (
+        earned_data[0]
+        if earned_data
+        else 0
+    )
+
+    cursor.execute("""
     SELECT offense_type, expires_at
     FROM offense_timers
     WHERE user_id = ?
@@ -4660,6 +4679,12 @@ async def profile(
     embed.add_field(
         name="Gold Points",
         value=f":moneybag: {gold_points}",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Total Earned",
+        value=f"${total_earned:,.2f}",
         inline=False
     )
 
@@ -6891,7 +6916,7 @@ class ConfirmExchangeView(ui.View):
         }
 
         channel_name = (
-            confirm_interaction.user.display_name
+            f"payout-{confirm_interaction.user.display_name}"
             .lower()
             .replace(" ", "-")
         )
@@ -7289,6 +7314,10 @@ class PayoutConfirmView(ui.View):
         gold_cost = int(parts["gold"])
         exchange_reward = parts["reward"]
 
+        earned_amount = float(
+            exchange_reward.replace("$", "")
+        )
+
         # ticket channel
         await interaction.channel.send(
             f"✅ {interaction.user.mention} confirmed payout received."
@@ -7334,6 +7363,24 @@ class PayoutConfirmView(ui.View):
 
             # ✅ THIS WAS MISSING
             await payout_channel.send(embed=embed)
+
+            cursor.execute("""
+            INSERT INTO creator_earnings (
+                user_id,
+                total_earned
+            )
+            VALUES (?, ?)
+
+            ON CONFLICT(user_id)
+            DO UPDATE SET
+                total_earned =
+                total_earned + excluded.total_earned
+            """, (
+                interaction.user.id,
+                earned_amount
+            ))
+
+            conn.commit()
 
         await interaction.edit_original_response(
             content="✅ Payout confirmed.",
@@ -8781,23 +8828,57 @@ class GiveawayConfirmView(ui.View):
         self.giveaway_id = giveaway_id
 
     @discord.ui.button(
-        label="Enter Raffle",
+        label="1 Entry",
         style=discord.ButtonStyle.green
     )
-    async def confirm(
+    async def one_entry(
             self,
             interaction: discord.Interaction,
             button: discord.ui.Button
     ):
+        await self.process_entries(
+            interaction,
+            1
+        )
+
+    @discord.ui.button(
+        label="2 Entries",
+        style=discord.ButtonStyle.blurple
+    )
+    async def two_entries(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+        await self.process_entries(
+            interaction,
+            2
+        )
+
+    @discord.ui.button(
+        label="3 Entries",
+        style=discord.ButtonStyle.red
+    )
+    async def three_entries(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+        await self.process_entries(
+            interaction,
+            3
+        )
+
+    async def process_entries(
+            self,
+            interaction: discord.Interaction,
+            entries_to_buy: int
+    ):
 
         await interaction.response.defer()
 
-        # =========================
-        # ALREADY ENTERED
-        # =========================
-
         cursor.execute("""
-        SELECT id
+        SELECT COUNT(*)
         FROM giveaway_entries
         WHERE giveaway_id = ?
         AND user_id = ?
@@ -8806,15 +8887,24 @@ class GiveawayConfirmView(ui.View):
             interaction.user.id
         ))
 
-        if cursor.fetchone():
+        current_entries = cursor.fetchone()[0]
+
+        remaining_entries = (
+                MAX_GIVEAWAY_ENTRIES
+                - current_entries
+        )
+
+        if current_entries >= MAX_GIVEAWAY_ENTRIES:
             return await interaction.followup.send(
-                "❌ You already entered this giveaway.",
+                f"❌ You already reached the maximum of {MAX_GIVEAWAY_ENTRIES} entries.",
                 ephemeral=True
             )
 
-        # =========================
-        # CHECK GOLD
-        # =========================
+        if entries_to_buy > remaining_entries:
+            return await interaction.followup.send(
+                f"❌ You can only buy {remaining_entries} more {'entry' if remaining_entries == 1 else 'entries'}.",
+                ephemeral=True
+            )
 
         cursor.execute("""
         SELECT gold_points
@@ -8828,47 +8918,41 @@ class GiveawayConfirmView(ui.View):
 
         current_gold = result[0] if result else 0
 
-        if current_gold < RAFFLE_ENTRY_COST:
+        required_gold = (
+                entries_to_buy
+                * RAFFLE_ENTRY_COST
+        )
+
+        if current_gold < required_gold:
             return await interaction.followup.send(
-                "❌ You need at least :moneybag: 1 Gold Point.",
+                f"❌ You need {required_gold} Gold Points.",
                 ephemeral=True
             )
-
-        # =========================
-        # REMOVE GOLD
-        # =========================
 
         cursor.execute("""
         UPDATE users
         SET gold_points = gold_points - ?
         WHERE user_id = ?
         """, (
-            RAFFLE_ENTRY_COST,
+            required_gold,
             interaction.user.id
         ))
 
-        # =========================
-        # SAVE ENTRY
-        # =========================
-
-        cursor.execute("""
-        INSERT INTO giveaway_entries (
-            giveaway_id,
-            user_id,
-            entered_at
-        )
-        VALUES (?, ?, ?)
-        """, (
-            self.giveaway_id,
-            interaction.user.id,
-            datetime.now(UTC).isoformat()
-        ))
+        for _ in range(entries_to_buy):
+            cursor.execute("""
+            INSERT INTO giveaway_entries (
+                giveaway_id,
+                user_id,
+                entered_at
+            )
+            VALUES (?, ?, ?)
+            """, (
+                self.giveaway_id,
+                interaction.user.id,
+                datetime.now(UTC).isoformat()
+            ))
 
         conn.commit()
-
-        # =========================
-        # UPDATE PARTICIPANT COUNT
-        # =========================
 
         await update_giveaway_participants(
             interaction.guild,
@@ -8900,12 +8984,16 @@ class GiveawayConfirmView(ui.View):
             await log_channel.send(
                 f"🎟️ **Giveaway Entry**\n\n"
                 f"👤 {interaction.user.mention}\n"
-                f"Spent: :moneybag: 1 Gold Point\n"
+                f"Entries Purchased: {entries_to_buy}\n"
+                f"Spent: :moneybag: {required_gold} Gold Points\n"
                 f"Remaining Gold: :moneybag: {remaining_gold}"
             )
 
         await interaction.edit_original_response(
-            content="✅ Raffle entry submitted.",
+            content=(
+                f"✅ Purchased {entries_to_buy} raffle "
+                f"entr{'y' if entries_to_buy == 1 else 'ies'}."
+            ),
             view=None
         )
 
@@ -8963,7 +9051,8 @@ class GiveawayEntryView(ui.View):
         giveaway_id = giveaway[0]
 
         await interaction.response.send_message(
-            "🎟 Entering costs :moneybag: **1 Gold Point**.\n\n"
+            "🎟 Each entry cost :moneybag: **1 Gold Point**.\n"
+            "Maximum: **3 entries per user**.\n\n"
             "Continue?",
             view=GiveawayConfirmView(giveaway_id),
             ephemeral=True
@@ -9020,7 +9109,7 @@ async def update_giveaway_participants(
 
         embed.set_field_at(
             1,
-            name="Participants",
+            name="Entries",
             value=str(total_entries),
             inline=False
         )
@@ -9083,7 +9172,7 @@ async def create_new_giveaway(guild):
     )
 
     embed.add_field(
-        name="Participants",
+        name="Entries",
         value="0",
         inline=False
     )
@@ -9096,7 +9185,7 @@ async def create_new_giveaway(guild):
 
     embed.add_field(
         name="Entries",
-        value="One entry per user",
+        value="Maximum 3 entries per user",
         inline=False
     )
 
@@ -9206,7 +9295,7 @@ async def draw_giveaway_winner(
         )
 
         ended_embed.add_field(
-            name="Participants",
+            name="Entries",
             value="0",
             inline=False
         )
@@ -9281,7 +9370,7 @@ async def draw_giveaway_winner(
     )
 
     winner_embed.add_field(
-        name="Participants",
+        name="Total Entries",
         value=str(participant_count),
         inline=False
     )
@@ -9381,8 +9470,14 @@ async def draw_giveaway_winner(
             )
     }
 
+    channel_name = (
+        winner.display_name
+        .lower()
+        .replace(" ", "-")
+    )
+
     ticket = await guild.create_text_channel(
-        name=f"raffle-winner-{winner.name}",
+        name=f"raffle-winner-{channel_name}",
         category=category,
         overwrites=overwrites
     )
@@ -9553,7 +9648,8 @@ class GiveawayReceivedView(ui.View):
 
             embed = discord.Embed(
                 title="🏆 Daily Raffle Paid",
-                color=discord.Color.green()
+                color=discord.Color.gold(),
+                timestamp=discord.utils.utcnow()
             )
 
             embed.add_field(
@@ -9578,17 +9674,182 @@ class GiveawayReceivedView(ui.View):
                 url=interaction.user.display_avatar.url
             )
 
-            embed.set_footer(text="Velorax Exchange System")
+            embed.set_footer(text="Velorax Raffle System")
 
             await payout_channel.send(
                 embed=embed
             )
 
+            earned_amount = 10.0
+
+            cursor.execute("""
+                        INSERT INTO creator_earnings (
+                            user_id,
+                            total_earned
+                        )
+                        VALUES (?, ?)
+
+                        ON CONFLICT(user_id)
+                        DO UPDATE SET
+                            total_earned =
+                            total_earned + excluded.total_earned
+                        """, (
+                interaction.user.id,
+                earned_amount
+            ))
+
+            conn.commit()
+
         await interaction.response.edit_message(
             content="✅ Prize confirmed received.",
             embed=None,
-            view=None
+            view=RaffleCloseTicketView()
         )
+
+    @discord.ui.button(
+        label="❌ Not Yet",
+        style=discord.ButtonStyle.red,
+        custom_id="raffle_not_received"
+    )
+    async def not_received(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["winner"])
+
+        if interaction.user.id != winner_id:
+            return await interaction.response.send_message(
+                "Only the winner can respond.",
+                ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            "⏳ Admin will follow up.",
+            ephemeral=True
+        )
+
+class RaffleClosedTicketView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(
+        label="Reopen Ticket",
+        style=discord.ButtonStyle.green,
+        custom_id="raffle_reopen_ticket"
+    )
+    async def reopen_ticket(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        topic = interaction.channel.topic
+
+        parts = {}
+
+        for item in topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["winner"])
+
+        winner = interaction.guild.get_member(
+            winner_id
+        )
+
+        if winner:
+
+            await interaction.channel.set_permissions(
+                winner,
+                view_channel=True
+            )
+
+        await interaction.response.edit_message(
+            content="🔓 Ticket reopened.",
+            view=RaffleCloseTicketView()
+        )
+
+    @ui.button(
+        label="Delete Ticket",
+        style=discord.ButtonStyle.red,
+        custom_id="raffle_delete_ticket"
+    )
+    async def delete_ticket(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        admin_role = interaction.guild.get_role(
+            ADMIN_ROLE_ID
+        )
+
+        if admin_role not in interaction.user.roles:
+            return await interaction.response.send_message(
+                "Admins only.",
+                ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            "🗑️ Deleting ticket...",
+            ephemeral=True
+        )
+
+        await interaction.channel.delete()
+
+class RaffleCloseTicketView(ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @ui.button(
+        label="Close",
+        style=discord.ButtonStyle.red,
+        custom_id="raffle_close_ticket"
+    )
+    async def close_ticket(
+            self,
+            interaction: discord.Interaction,
+            button: ui.Button
+    ):
+
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["winner"])
+
+        winner = interaction.guild.get_member(
+            winner_id
+        )
+
+        if winner:
+
+            await interaction.channel.set_permissions(
+                winner,
+                view_channel=False
+            )
+
+        await interaction.response.send_message(
+            "🔒 Ticket closed.",
+            ephemeral=False
+        )
+
+        await interaction.channel.send(
+            view=RaffleClosedTicketView()
+        )
+
 
 async def run_monthly_leaderboard_draw(bot):
 
@@ -9745,7 +10006,11 @@ async def run_monthly_leaderboard_draw(bot):
         )
 
         await ticket.edit(
-            topic=f"winner:{winner.id}|type:leaderboard"
+            topic=(
+                f"user_id:{winner.id}|"
+                f"type:leaderboard|"
+                f"reward:$20"
+            )
         )
 
         embed = discord.Embed(
@@ -9755,7 +10020,8 @@ async def run_monthly_leaderboard_draw(bot):
                 "Congratulations!\n"
                 "You finished in the Top 10."
             ),
-            color=discord.Color.gold()
+            color=discord.Color.purple(),
+            timestamp=discord.utils.utcnow()
         )
 
         embed.add_field(
@@ -9773,35 +10039,39 @@ async def run_monthly_leaderboard_draw(bot):
             view=LeaderboardPayoutView()
         )
 
-        cursor.execute("""
-        INSERT INTO leaderboard_draws (
-            draw_month
-        )
-        VALUES (?)
-        """, (
-            month_key,
-        ))
-
-        conn.commit()
-
-        cursor.execute("""
-        UPDATE users
-        SET velorax = 0
-        """)
-
-        conn.commit()
-
-        logs_channel = guild.get_channel(
-            LOGS_CHANNEL
+        await ticket.send(
+            view=CloseTicketView()
         )
 
-        if logs_channel:
-            await logs_channel.send(
-                f"🏆 VeloraX Monthly leaderboard ended.\n\n"
-                f"Winners: {len(winners)}\n"
-                f"Month: {month_key}\n\n"
-                f"VeloraX leaderboard has been reset."
+    cursor.execute("""
+            INSERT INTO leaderboard_draws (
+                draw_month
             )
+            VALUES (?)
+            """, (
+        month_key,
+    ))
+
+    conn.commit()
+
+    cursor.execute("""
+            UPDATE users
+            SET velorax = 0
+            """)
+
+    conn.commit()
+
+    logs_channel = guild.get_channel(
+        LOGS_CHANNEL
+    )
+
+    if logs_channel:
+        await logs_channel.send(
+            f"🏆 VeloraX Monthly leaderboard ended.\n\n"
+            f"Winners: {len(winners)}\n"
+            f"Month: {month_key}\n\n"
+            f"VeloraX leaderboard has been reset."
+        )
 
 class LeaderboardPayoutView(ui.View):
 
@@ -9837,7 +10107,7 @@ class LeaderboardPayoutView(ui.View):
             key, value = item.split(":", 1)
             parts[key] = value
 
-        winner_id = int(parts["winner"])
+        winner_id = int(parts["user_id"])
 
         winner = interaction.guild.get_member(
             winner_id
@@ -9852,10 +10122,17 @@ class LeaderboardPayoutView(ui.View):
             color=discord.Color.green()
         )
 
+        parts["admin"] = str(
+            interaction.user.id
+        )
+
+        new_topic = "|".join(
+            f"{k}:{v}"
+            for k, v in parts.items()
+        )
+
         await interaction.channel.edit(
-            topic=(
-                f"{topic}|admin:{interaction.user.id}"
-            )
+            topic=new_topic
         )
 
         await interaction.response.send_message(
@@ -9886,7 +10163,7 @@ class LeaderboardReceivedView(ui.View):
             key, value = item.split(":", 1)
             parts[key] = value
 
-        winner_id = int(parts["winner"])
+        winner_id = int(parts["user_id"])
 
         if interaction.user.id != winner_id:
             return await interaction.response.send_message(
@@ -9895,10 +10172,10 @@ class LeaderboardReceivedView(ui.View):
             )
 
         admin_id = int(parts["admin"])
+        admin = interaction.guild.get_member(admin_id)
 
-        admin = interaction.guild.get_member(
-            admin_id
-        )
+        reward = "$20"
+        earned_amount = 20.0
 
         payout_channel = interaction.guild.get_channel(
             APPROVAL_CHANNEL
@@ -9908,12 +10185,19 @@ class LeaderboardReceivedView(ui.View):
 
             embed = discord.Embed(
                 title="🏆 Monthly Leaderboard Paid",
-                color=discord.Color.green()
+                color=discord.Color.purple(),
+                timestamp=discord.utils.utcnow()
             )
 
             embed.add_field(
                 name="Winner",
                 value=interaction.user.mention,
+                inline=False
+            )
+
+            embed.add_field(
+                name="Reward",
+                value=reward,
                 inline=False
             )
 
@@ -9931,14 +10215,64 @@ class LeaderboardReceivedView(ui.View):
                 url=interaction.user.display_avatar.url
             )
 
-            await payout_channel.send(
-                embed=embed
-            )
+            embed.set_footer(text="Velorax Leaderboard System")
+
+            await payout_channel.send(embed=embed)
+
+        # Add earnings
+
+        cursor.execute("""
+        INSERT INTO creator_earnings (
+            user_id,
+            total_earned
+        )
+        VALUES (?, ?)
+
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+            total_earned =
+            total_earned + excluded.total_earned
+        """, (
+            interaction.user.id,
+            earned_amount
+        ))
+
+        conn.commit()
 
         await interaction.response.edit_message(
             content="✅ Reward confirmed received.",
             embed=None,
             view=None
+        )
+
+    @discord.ui.button(
+        label="❌ Not Yet",
+        style=discord.ButtonStyle.red,
+        custom_id="leaderboard_not_received"
+    )
+    async def not_received(
+            self,
+            interaction: discord.Interaction,
+            button: discord.ui.Button
+    ):
+
+        parts = {}
+
+        for item in interaction.channel.topic.split("|"):
+            key, value = item.split(":", 1)
+            parts[key] = value
+
+        winner_id = int(parts["user_id"])
+
+        if interaction.user.id != winner_id:
+            return await interaction.response.send_message(
+                "Only the winner can respond.",
+                ephemeral=True
+            )
+
+        await interaction.response.send_message(
+            "⏳ Okay, admin will follow up.",
+            ephemeral=True
         )
 
 # =========================
