@@ -2757,6 +2757,14 @@ class CommunityQuestView(ui.View):
         # GET QUEST DATA
         # =========================
 
+        print(
+            f"BUTTON QUEST ID = {self.quest_id}"
+        )
+
+        print(
+            f"USER CLICKED = {interaction.user.id}"
+        )
+
         cursor.execute("""
         SELECT
             created_by,
@@ -2772,6 +2780,7 @@ class CommunityQuestView(ui.View):
 
         quest_data = cursor.fetchone()
 
+        print(f"RAW QUEST DATA = {quest_data}")
         print(
             f"QUEST DEBUG | "
             f"quest_id={self.quest_id} | "
