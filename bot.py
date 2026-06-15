@@ -2709,6 +2709,10 @@ class CommunityQuestView(ui.View):
             button: ui.Button
     ):
 
+        print(
+            f"BUTTON CLICKED | quest_id={self.quest_id}"
+        )
+
         try:
             await interaction.response.defer(
                 ephemeral=True
@@ -2767,6 +2771,15 @@ class CommunityQuestView(ui.View):
         """, (self.quest_id,))
 
         quest_data = cursor.fetchone()
+
+        print(
+            f"QUEST DEBUG | "
+            f"quest_id={self.quest_id} | "
+            f"claims={quest_data[1]} | "
+            f"max={quest_data[2]} | "
+            f"completed={quest_data[3]} | "
+            f"title={quest_data[4]}"
+        )
 
         if not quest_data:
             try:
@@ -10914,4 +10927,5 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
+
 
