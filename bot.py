@@ -14,6 +14,7 @@ GUILD_ID = 1501471671360553131
 VELORAX_X_USERNAME = "VeloraX_Labs"
 GUILD_OWNER_ID = 488015447417946151
 ADMIN_ROLE_ID = 1501472062903156756  # Team
+ELITE_CREATOR_ROLE_ID = 1514517405735452843 # Elite Creator
 MEMBER_ROLE_ID = 1501473138188353616  # Creator
 VERIFIED_ROLE_ID = 1501473283852472380  # Engager
 WELCOME_CHANNEL_ID = 1501481909337718824
@@ -1274,7 +1275,12 @@ class SubmitQuestButton(ui.Button):
     async def callback(self, interaction: discord.Interaction):
 
         cursor.execute("""
-        SELECT expires_at, quest_type, proof_thread_id, tweet_link
+        SELECT
+            expires_at,
+            quest_type,
+            proof_thread_id,
+            tweet_link,
+            priority_until
         FROM quests
         WHERE quest_id = ?
         """, (self.quest_id,))
@@ -1287,6 +1293,38 @@ class SubmitQuestButton(ui.Button):
                 ephemeral=True
             )
             return
+
+        priority_until = quest[4]
+
+        if priority_until:
+
+            priority_until = datetime.fromisoformat(
+                priority_until
+            )
+
+            if datetime.now(UTC) < priority_until:
+
+                elite_role = interaction.guild.get_role(
+                    ELITE_CREATOR_ROLE_ID
+                )
+
+                if elite_role not in interaction.user.roles:
+                    remaining = int(
+                        (
+                                priority_until -
+                                datetime.now(UTC)
+                        ).total_seconds() / 60
+                    )
+
+                    await interaction.response.send_message(
+                        f"🔒 Elite Creator Early Access\n\n"
+                        f"This quest is exclusive to Elite Creators.\n"
+                        f"Available to everyone in "
+                        f"{remaining} minutes.",
+                        ephemeral=True
+                    )
+
+                    return
 
         expires_at = quest[0]
 
@@ -3830,6 +3868,11 @@ async def paid_quest(
 
             created_at = datetime.now(UTC)
 
+            priority_until = (
+                    datetime.now(UTC)
+                    + timedelta(minutes=10)
+            ).isoformat()
+
 
             cursor.execute("""
             INSERT INTO quests (
@@ -3840,11 +3883,12 @@ async def paid_quest(
                 instructions,
                 created_by,
                 created_at,
+                priority_until,
                 max_claims,
                 current_claims,
                 completed
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 str(self.quest_title),
                 str(self.tweet_link),
@@ -3853,6 +3897,7 @@ async def paid_quest(
                 instructions_text,
                 modal_interaction.user.id,
                 created_at.isoformat(),
+                priority_until,
                 max_claims,
                 0,
                 0
@@ -3904,6 +3949,15 @@ async def paid_quest(
                     value=str(self.instructions),
                     inline=False
                 )
+
+            embed.add_field(
+                name="Priority Access",
+                value=(
+                    "🔒 Elite Creators Only\n"
+                    "First 10 Minutes"
+                ),
+                inline=False
+            )
 
             embed.set_thumbnail(
                 url=modal_interaction.user.display_avatar.url
@@ -4277,7 +4331,7 @@ async def offense_expiration_loop():
                 "first",
                 (
                     datetime.now(UTC) +
-                    timedelta(days=30)
+                    timedelta(days=7)
                 ).isoformat()
             ))
 
@@ -4311,56 +4365,72 @@ async def reminder_loop():
 
     await send_random_announcement()
 
-# =========================
-# UPDATE QUEST STATUS
-# =========================
 
-@tasks.loop(minutes=20)
-async def update_quests():
-    for guild in bot.guilds:
+@tasks.loop(minutes=1)
+async def update_priority_access():
 
-        channels = [
-            get_channel(guild, QUEST_CHANNEL),
-            get_channel(guild, PAID_QUEST_CHANNEL)
-        ]
+    cursor.execute("""
+    SELECT
+        quest_id,
+        message_id,
+        priority_until
+    FROM quests
+    WHERE completed = 0
+    """)
 
-        for channel in channels:
+    quests = cursor.fetchall()
 
-            if not channel:
-                continue
+    for quest_id, message_id, priority_until in quests:
 
-        cursor.execute("""
-        SELECT quest_id, expires_at, message_id
-        FROM quests
-        """)
+        if not priority_until:
+            continue
 
-        quests = cursor.fetchall()
+        unlock_time = datetime.fromisoformat(
+            priority_until
+        )
 
-        for quest_id, expires_at, message_id in quests:
+        if datetime.now(UTC) < unlock_time:
+            continue
 
-            try:
-                message = await channel.fetch_message(message_id)
+        try:
 
-                embed = message.embeds[0]
+            channel = bot.get_channel(
+                PAID_QUEST_CHANNEL
+            )
 
-                new_time = time_left(expires_at)
+            msg = await channel.fetch_message(
+                message_id
+            )
 
-                current_time = embed.fields[0].value
+            embed = msg.embeds[0]
 
-                # ONLY EDIT IF DIFFERENT
+            updated = False
 
-                if current_time != new_time:
-                    embed.set_field_at(
-                        0,
-                        name="Time Left",
-                        value=new_time,
-                        inline=False
-                    )
+            for index, field in enumerate(embed.fields):
 
-                    await message.edit(embed=embed)
+                if field.name == "Priority Access":
 
-            except:
-                pass
+                    if "Open To Everyone" not in field.value:
+
+                        embed.set_field_at(
+                            index,
+                            name="Priority Access",
+                            value="🌍 Open To Everyone",
+                            inline=False
+                        )
+
+                        updated = True
+
+                    break
+
+            if updated:
+
+                await msg.edit(embed=embed)
+
+        except Exception as e:
+            print(
+                f"Priority update error: {e}"
+            )
 
 @tasks.loop(hours=4)
 async def admin_creator_points_loop():
@@ -7922,13 +7992,13 @@ class ReportReviewView(ui.View):
                 "first",
                 (
                         datetime.now(UTC) +
-                        timedelta(days=30)
+                        timedelta(days=7)
                 ).isoformat()
             ))
 
             conn.commit()
 
-            expires = datetime.now(UTC) + timedelta(days=30)
+            expires = datetime.now(UTC) + timedelta(days=7)
 
             if logs_channel:
                 await logs_channel.send(
@@ -8055,13 +8125,13 @@ class ReportReviewView(ui.View):
                 "second",
                 (
                         datetime.now(UTC) +
-                        timedelta(days=30)
+                        timedelta(days=7)
                 ).isoformat()
             ))
 
             conn.commit()
 
-            expires = datetime.now(UTC) + timedelta(days=30)
+            expires = datetime.now(UTC) + timedelta(days=7)
 
             if logs_channel:
                 await logs_channel.send(
@@ -8259,7 +8329,7 @@ class ReportReviewView(ui.View):
                 )
 
                 if status == "First Offense":
-                    expires = datetime.now(UTC) + timedelta(days=30)
+                    expires = datetime.now(UTC) + timedelta(days=7)
 
                     embed.add_field(
                         name="⏳ Offense Expires",
@@ -8268,7 +8338,7 @@ class ReportReviewView(ui.View):
                     )
 
                 elif status == "Second Offense":
-                    expires = datetime.now(UTC) + timedelta(days=30)
+                    expires = datetime.now(UTC) + timedelta(days=7)
 
                     embed.add_field(
                         name="⏳ Second Offense Expires",
@@ -10882,8 +10952,8 @@ async def on_message(message):
 async def on_ready():
     print(f"Logged in as {bot.user}")
 
-    if not update_quests.is_running():
-        update_quests.start()
+    if not update_priority_access.is_running():
+        update_priority_access.start()
 
     if not monthly_leaderboard_scheduler.is_running():
         monthly_leaderboard_scheduler.start()
@@ -10936,5 +11006,4 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
-
 
