@@ -10146,10 +10146,33 @@ async def run_monthly_leaderboard_draw(bot):
 
     conn.commit()
 
-    cursor.execute("""
-            UPDATE users
-            SET velorax = 0
-            """)
+    admin_role = guild.get_role(ADMIN_ROLE_ID)
+
+    admin_ids = []
+
+    if admin_role:
+        admin_ids = [member.id for member in admin_role.members]
+
+    if admin_ids:
+
+        placeholders = ",".join("?" for _ in admin_ids)
+
+        cursor.execute(f"""
+        UPDATE users
+        SET
+            velorax = 0,
+            points = 25
+        WHERE user_id NOT IN ({placeholders})
+        """, admin_ids)
+
+    else:
+
+        cursor.execute("""
+        UPDATE users
+        SET
+            velorax = 0,
+            points = 25
+        """)
 
     conn.commit()
 
@@ -11006,4 +11029,3 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
-
