@@ -3870,7 +3870,7 @@ async def paid_quest(
 
             priority_until = (
                     datetime.now(UTC)
-                    + timedelta(minutes=10)
+                    + timedelta(minutes=5)
             ).isoformat()
 
 
@@ -3954,7 +3954,7 @@ async def paid_quest(
                 name="Priority Access",
                 value=(
                     "🔒 Elite Creators Only\n"
-                    "First 10 Minutes"
+                    "First 5 Minutes"
                 ),
                 inline=False
             )
