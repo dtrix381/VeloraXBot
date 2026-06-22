@@ -9519,7 +9519,7 @@ async def draw_giveaway_winner(
             f"🏆 **Raffle Winner**\n\n"
             f"Winner: {winner.mention}\n"
             f"Prize: $10\n"
-            f"Participants: {participant_count}\n"
+            f"Total Entries: {participant_count}\n"
             f"Gold Turned Into: $10"
         )
 
@@ -10160,8 +10160,7 @@ async def run_monthly_leaderboard_draw(bot):
         cursor.execute(f"""
         UPDATE users
         SET
-            velorax = 0,
-            points = 25
+            velorax = 0
         WHERE user_id NOT IN ({placeholders})
         """, admin_ids)
 
@@ -10170,8 +10169,7 @@ async def run_monthly_leaderboard_draw(bot):
         cursor.execute("""
         UPDATE users
         SET
-            velorax = 0,
-            points = 25
+            velorax = 0
         """)
 
     conn.commit()
@@ -11029,3 +11027,4 @@ async def on_ready():
 # Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
+
