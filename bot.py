@@ -6273,7 +6273,7 @@ class FollowQuestView(ui.View):
         cursor.execute("""
         SELECT 1
         FROM follow_claims
-        WHERE user_id = ?
+        WHERE claimer_id = ?
         """, (
             interaction.user.id,
         ))
