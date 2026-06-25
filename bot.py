@@ -6246,7 +6246,7 @@ class FollowQuestView(ui.View):
     @ui.button(
         label="Claim Follow Quest",
         style=discord.ButtonStyle.green,
-        custom_id="follow_velorax_claim"
+        custom_id="follow_quest_claim"
     )
     async def claim(
             self,
