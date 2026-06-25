@@ -6272,7 +6272,7 @@ class FollowQuestView(ui.View):
         # Already claimed?
         cursor.execute("""
         SELECT 1
-        FROM velorax_follow_claims
+        FROM follow_claims
         WHERE user_id = ?
         """, (
             interaction.user.id,
@@ -10991,9 +10991,6 @@ async def on_ready():
     if not giveaway_loop.is_running():
         giveaway_loop.start()
 
-        # =========================
-        # CREATE FIRST GIVEAWAY
-        # =========================
 
     cursor.execute("""
         SELECT giveaway_id
@@ -11024,7 +11021,6 @@ async def on_ready():
             for invite in await guild.invites()
         }
 
-# Run the bot
 if __name__ == "__main__":
     bot.run(TOKEN)
 
