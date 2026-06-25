@@ -6269,18 +6269,20 @@ class FollowQuestView(ui.View):
                 ephemeral=True
             )
 
-        # Already claimed?
+        # Already claimed this creator?
         cursor.execute("""
         SELECT 1
         FROM follow_claims
         WHERE claimer_id = ?
+        AND creator_id = ?
         """, (
             interaction.user.id,
+            self.creator_id
         ))
 
         if cursor.fetchone():
             return await interaction.response.send_message(
-                "❌ You already claimed this quest.",
+                "❌ You already claimed a Follow Quest from this creator.",
                 ephemeral=True
             )
 
