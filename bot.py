@@ -6269,7 +6269,14 @@ class FollowQuestView(ui.View):
                 ephemeral=True
             )
 
-        # Already claimed this creator?
+        # Already claimed?
+
+        print(
+            "DEBUG",
+            "creator_id =", self.creator_id,
+            "claimer_id =", interaction.user.id
+        )
+
         cursor.execute("""
         SELECT 1
         FROM follow_claims
@@ -6280,9 +6287,13 @@ class FollowQuestView(ui.View):
             self.creator_id
         ))
 
-        if cursor.fetchone():
+        result = cursor.fetchone()
+
+        print("DEBUG RESULT =", result)
+
+        if result:
             return await interaction.response.send_message(
-                "❌ You already claimed a Follow Quest from this creator.",
+                "❌ You already claimed this creator.",
                 ephemeral=True
             )
 
@@ -6383,10 +6394,17 @@ class FollowQuestView(ui.View):
 
             conn.commit()
 
-        except:
+
+        except Exception as e:
+
+            print("FOLLOW CLAIM ERROR:", e)
+
             await interaction.response.send_message(
-                "❌ You already claimed this creator.",
+
+                f"ERROR: {e}",
+
                 ephemeral=True
+
             )
             return
 
