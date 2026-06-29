@@ -4310,7 +4310,7 @@ async def offense_expiration_loop():
             if report_channel:
                 await report_channel.send(
                     f"✅ {member.mention}'s Second Offense has been removed.\n"
-                    f"📅 No additional penalties were received for 30 days.\n"
+                    f"📅 No additional penalties were received for 7 days.\n"
                     f"⏳ First Offense timer has now started."
                 )
 
@@ -4873,7 +4873,7 @@ async def profile(
         ) in page_data:
             quest_channel = get_channel(
                 interaction.guild,
-                QUEST_CHANNEL
+                PAID_QUEST_CHANNEL
             )
 
             quest_message_url = (
