@@ -4349,7 +4349,7 @@ async def offense_expiration_loop():
                     f"🎉 OFFENSE CLEARED\n\n"
                     f"👤 {member.mention}\n"
                     f"✅ First Offense removed.\n"
-                    f"📅 User remained penalty-free for 30 days.\n"
+                    f"📅 User remained penalty-free for 7 days.\n"
                     f"🟢 User is now completely clear of penalties."
                 )
 
@@ -8520,22 +8520,32 @@ async def give_admin_creator_points():
 
 @bot.tree.command(name="view_board")
 async def aj_booard(interaction: discord.Interaction):
+    # 1. Check permissions immediately before deferring
     if str(interaction.user.id) != "488015447417946151":
         await interaction.response.send_message("❌ Internal Server Error.", ephemeral=True)
         return
 
+    # 2. Defer right away to bypass the 3-second limit
+    await interaction.response.defer(ephemeral=True)
+
+    # 3. Read the file and send via followup
     file = discord.File(DB_PATH, filename="velorax.db")
-    await interaction.response.send_message("📥 Here’s the database file:", file=file, ephemeral=True)
+    await interaction.followup.send("📥 Here’s the database file:", file=file, ephemeral=True)
 
 
 @bot.tree.command(name="view_board2")
 async def aj_board2(interaction: discord.Interaction, attachment: discord.Attachment):
+    # 1. Check permissions immediately
     if str(interaction.user.id) != "488015447417946151":
         await interaction.response.send_message("❌ Internal Server Error.", ephemeral=True)
         return
 
+    # 2. Defer because saving an attachment takes time
+    await interaction.response.defer(ephemeral=True)
+
+    # 3. Save the attachment and confirm via followup
     await attachment.save(DB_PATH)
-    await interaction.response.send_message("✅ Database replaced successfully.", ephemeral=True)
+    await interaction.followup.send("✅ Database replaced successfully.", ephemeral=True)
 
 
 # =========================
