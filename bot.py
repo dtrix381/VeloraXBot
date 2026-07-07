@@ -10190,7 +10190,8 @@ async def run_monthly_leaderboard_draw(bot):
         cursor.execute(f"""
         UPDATE users
         SET
-            velorax = 0
+            velorax = 0,
+            points = 50
         WHERE user_id NOT IN ({placeholders})
         """, admin_ids)
 
@@ -10199,7 +10200,8 @@ async def run_monthly_leaderboard_draw(bot):
         cursor.execute("""
         UPDATE users
         SET
-            velorax = 0
+            velorax = 0,
+            points = 50
         """)
 
     conn.commit()
