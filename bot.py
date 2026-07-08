@@ -4438,40 +4438,6 @@ async def admin_creator_points_loop():
     await give_admin_creator_points()
 
 # =========================
-# GIVEAWAY LOOP
-# =========================
-
-@tasks.loop(minutes=60)
-async def giveaway_loop():
-
-    cursor.execute("""
-    SELECT
-        giveaway_id,
-        raffle_message_id,
-        draw_time
-    FROM giveaways
-    WHERE completed = 0
-    """)
-
-    giveaways = cursor.fetchall()
-
-    now = datetime.now(UTC)
-
-    for giveaway_id, raffle_message_id, draw_time in giveaways:
-
-        try:
-            draw_time = datetime.fromisoformat(draw_time)
-        except:
-            continue
-
-        if now >= draw_time:
-
-            await draw_giveaway_winner(
-                giveaway_id,
-                raffle_message_id
-            )
-
-# =========================
 # GIVEAWAY DRAW TASK
 # =========================
 
@@ -11020,8 +10986,8 @@ async def on_ready():
     if not offense_expiration_loop.is_running():
         offense_expiration_loop.start()
 
-    if not giveaway_loop.is_running():
-        giveaway_loop.start()
+    if not giveaway_draw_task.is_running():
+        giveaway_draw_task.start()
 
 
     cursor.execute("""
@@ -11038,9 +11004,6 @@ async def on_ready():
 
         if guild:
             await create_new_giveaway(guild)
-
-    if not giveaway_draw_task.is_running():
-        giveaway_draw_task.start()
 
     if not admin_creator_points_loop.is_running():
         admin_creator_points_loop.start()
