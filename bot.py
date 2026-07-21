@@ -4130,7 +4130,7 @@ Receive ⭐ 10 VeloraX
 
 🏆 VeloraX Leaderboard Eligibility
 
-To qualify for the monthly VeloraX Leaderboard, you must spend at least 300 Creator Points on quests during the current month.
+To qualify for the monthly VeloraX Leaderboard, you must spend at least 325 Creator Points on quests during the current month.
 
 Use `/velorax_leaderboard` to view the rankings.
 
@@ -4784,7 +4784,7 @@ async def profile(
 
     hosted_points = max(0, (velorax - engagements) * 2)
 
-    if hosted_points >= 300:
+    if hosted_points >= 325:
 
         eligibility_text = (
             f"✅ Eligible for Leaderboard Rewards\n"
@@ -4792,7 +4792,7 @@ async def profile(
 
     else:
 
-        needed = 300 - hosted_points
+        needed = 325 - hosted_points
 
         eligibility_text = (
             f"❌ Not Yet Eligible\n"
@@ -5446,7 +5446,7 @@ async def velorax_leaderboard(interaction: discord.Interaction):
 
             hosted_points = max(0, (velorax - engagements) * 2)
 
-            if hosted_points >= 300:
+            if hosted_points >= 325:
 
                 eligibility_text = (
                     f"✅ Eligible for Leaderboard Rewards\n"
@@ -5454,7 +5454,7 @@ async def velorax_leaderboard(interaction: discord.Interaction):
 
             else:
 
-                needed = 300 - hosted_points
+                needed = 325 - hosted_points
 
                 eligibility_text = (
                     f"❌ Not Yet Eligible\n"
@@ -10008,7 +10008,7 @@ async def run_monthly_leaderboard_draw(bot):
             (velorax - engagements) * 2
         )
 
-        if hosted_points < 300:
+        if hosted_points < 325:
             continue
 
         winners.append(
