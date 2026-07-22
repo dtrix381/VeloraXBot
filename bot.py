@@ -9966,7 +9966,8 @@ async def run_monthly_leaderboard_draw(bot):
         points,
         engagements,
         quests_created,
-        velorax
+        velorax,
+        hosted_points
     FROM users
     ORDER BY
         velorax DESC,
@@ -9985,7 +9986,8 @@ async def run_monthly_leaderboard_draw(bot):
         points,
         engagements,
         quests_created,
-        velorax
+        velorax,
+        hosted_points
     ) in users:
 
         member = guild.get_member(user_id)
@@ -10004,11 +10006,6 @@ async def run_monthly_leaderboard_draw(bot):
             for role in member.roles
         ):
             continue
-
-        hosted_points = max(
-            0,
-            (velorax - engagements) * 2
-        )
 
         if hosted_points < 325:
             continue
