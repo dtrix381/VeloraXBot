@@ -5386,7 +5386,7 @@ async def velorax_leaderboard(interaction: discord.Interaction):
                 points,
                 engagements,
                 quests_created,
-                velorax,,
+                velorax,
                 hosted_points
         ) in enumerate(chunk, start=i + 1):
 
