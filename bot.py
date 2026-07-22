@@ -5875,11 +5875,13 @@ async def create_quest(interaction: discord.Interaction):
                     SET
                         points = COALESCE(points,0) - ?,
                         quests_created = COALESCE(quests_created,0) + 1,
-                        velorax = COALESCE(velorax,0) + ?
+                        velorax = COALESCE(velorax,0) + ?,
+                        hosted_points = COALESCE(hosted_points,0) + ?
                     WHERE user_id = ?
                     """, (
                         self.budget,
                         velorax_reward,
+                        self.budget,
                         self.modal_interaction.user.id
                     ))
 
