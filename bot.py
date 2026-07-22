@@ -4581,6 +4581,8 @@ async def profile(
 
     data = cursor.fetchone()
 
+    print("RAW DATA =", data)
+
     cursor.execute("""
     SELECT
         quests.quest_id,
