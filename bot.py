@@ -2795,14 +2795,6 @@ class CommunityQuestView(ui.View):
         # GET QUEST DATA
         # =========================
 
-        print(
-            f"BUTTON QUEST ID = {self.quest_id}"
-        )
-
-        print(
-            f"USER CLICKED = {interaction.user.id}"
-        )
-
         cursor.execute("""
         SELECT
             created_by,
@@ -2817,16 +2809,6 @@ class CommunityQuestView(ui.View):
         """, (self.quest_id,))
 
         quest_data = cursor.fetchone()
-
-        print(f"RAW QUEST DATA = {quest_data}")
-        print(
-            f"QUEST DEBUG | "
-            f"quest_id={self.quest_id} | "
-            f"claims={quest_data[1]} | "
-            f"max={quest_data[2]} | "
-            f"completed={quest_data[3]} | "
-            f"title={quest_data[4]}"
-        )
 
         if not quest_data:
             try:
@@ -4625,6 +4607,13 @@ async def profile(
         return
 
     x_username, points, gold_points, completed, denied, engagements, quests_created, velorax = data
+
+    print(
+        "PROFILE DEBUG",
+        member.id,
+        x_username,
+        hosted_points
+    )
 
     cursor.execute("""
     SELECT total_earned
