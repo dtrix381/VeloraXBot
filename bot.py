@@ -4574,7 +4574,7 @@ async def profile(
         return
 
     cursor.execute("""
-    SELECT x_username, points, gold_points, quests_completed, quests_denied, engagements, quests_created, velorax
+    SELECT x_username, points, gold_points, quests_completed, quests_denied, engagements, quests_created, velorax, hosted_points
     FROM users
     WHERE user_id = ?
     """, (member.id,))
@@ -4608,7 +4608,7 @@ async def profile(
 
         return
 
-    x_username, points, gold_points, completed, denied, engagements, quests_created, velorax = data
+    x_username, points, gold_points, completed, denied, engagements, quests_created, velorax, hosted_points = data
 
     print(
         "PROFILE DEBUG",
@@ -5324,7 +5324,7 @@ async def velorax_leaderboard(interaction: discord.Interaction):
     # =========================
 
     cursor.execute("""
-    SELECT user_id, x_username, points, engagements, quests_created, velorax
+    SELECT user_id, x_username, points, engagements, quests_created, velorax, hosted_points
     FROM users
     ORDER BY velorax DESC,
              engagements DESC,
@@ -5386,7 +5386,8 @@ async def velorax_leaderboard(interaction: discord.Interaction):
                 points,
                 engagements,
                 quests_created,
-                velorax
+                velorax,,
+                hosted_points
         ) in enumerate(chunk, start=i + 1):
 
             member = interaction.guild.get_member(
