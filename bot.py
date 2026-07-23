@@ -10719,6 +10719,7 @@ async def on_message(message):
         FROM submissions
         WHERE user_id = ?
         AND quest_id = ?
+        AND status IN ('pending', 'approved')
         """, (
         message.author.id,
         quest_id
