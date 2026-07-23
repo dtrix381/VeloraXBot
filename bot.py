@@ -4773,8 +4773,6 @@ async def profile(
         inline=True
     )
 
-    hosted_points = max(0, (velorax - engagements) * 2)
-
     if hosted_points >= 325:
 
         eligibility_text = (
@@ -5435,8 +5433,6 @@ async def velorax_leaderboard(interaction: discord.Interaction):
                 value=f":gem: {points}",
                 inline=False
             )
-
-            hosted_points = max(0, (velorax - engagements) * 2)
 
             if hosted_points >= 325:
 
