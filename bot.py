@@ -10,6 +10,19 @@ import math
 from openpyxl import Workbook
 import random
 
+# X links are allowed in these channels
+X_LINK_EXEMPT_CHANNELS = {
+    1501476619641163927,  # Example: announcements
+    1501478145780482108,  # Example: social-media
+    1529479011988934836,
+    1507640090418086019,
+}
+
+X_LINK_PATTERN = re.compile(
+    r"https://x\.com/\S+",
+    re.IGNORECASE
+)
+
 GUILD_ID = 1501471671360553131
 VELORAX_X_USERNAME = "VeloraX_Labs"
 GUILD_OWNER_ID = 488015447417946151
@@ -10374,6 +10387,37 @@ class LeaderboardReceivedView(ui.View):
             ephemeral=True
         )
 
+@bot.listen("on_message")
+async def delete_x_links(message):
+
+    # Ignore bots
+    if message.author.bot:
+        return
+
+    # Allow X links in exempt channels
+    if message.channel.id in X_LINK_EXEMPT_CHANNELS:
+        return
+
+    # Check for X links
+    if X_LINK_PATTERN.search(message.content):
+
+        try:
+            await message.delete()
+
+            print(
+                f"🗑️ Deleted X link from "
+                f"{message.author} in #{message.channel}"
+            )
+
+        except discord.Forbidden:
+            print(
+                "❌ Cannot delete X link: "
+                "missing Manage Messages permission."
+            )
+
+        except discord.HTTPException as e:
+            print(f"❌ Failed to delete X link: {e}")
+            
 # =========================
 # DELETE MESSAGES
 # =========================
