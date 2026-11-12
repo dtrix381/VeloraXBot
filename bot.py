@@ -10625,7 +10625,7 @@ async def on_message(message):
     # PAID QUEST CHANNEL
     # =========================
 
-    if message.channel.id == PAID_QUEST_CHANNEL:
+    if message.channel.id == PAID_QUEST2_CHANNEL:
 
         try:
             await message.delete()
