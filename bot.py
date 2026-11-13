@@ -4357,7 +4357,7 @@ async def offense_expiration_loop():
 
             conn.commit()
 
-@tasks.loop(minutes=120)
+@tasks.loop(minutes=360)
 async def reminder_loop():
 
     await send_random_announcement()
