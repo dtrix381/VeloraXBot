@@ -54,8 +54,8 @@ STATS_CHANNEL = 1507640065826754630
 LEADERBOARD_CHANNEL = 1508476505900978346
 
 VIP_CATEGORY_NAME = 1507640088413339802
-PAID_QUEST_CHANNEL = 15076400904180860199
-PAID_QUEST2_CHANNEL = 1507640090418086019
+PAID_QUEST2_CHANNEL = 15076400904180860199
+PAID_QUEST_CHANNEL = 1507640090418086019
 SUBMISSION_QUEUE_CHANNEL = 1508629156215132347
 VIP_APPROVAL_CHANNEL = 1507640092494266418
 GOLD_LOGS_CHANNEL = 1507640096290242612
@@ -1295,7 +1295,9 @@ class SubmitQuestButton(ui.Button):
             quest_type,
             proof_thread_id,
             tweet_link,
-            priority_until
+            priority_until,
+            priority_role1_until,
+            priority_role2_until
         FROM quests
         WHERE quest_id = ?
         """, (self.quest_id,))
@@ -1309,37 +1311,149 @@ class SubmitQuestButton(ui.Button):
             )
             return
 
-        priority_until = quest[4]
+        # =========================
+        # ROLE IDs
+        # =========================
 
-        if priority_until:
+        SUPER_ELITE_ROLE_ID = 1572124021691261008
+        ELITE_ROLE_ID = 1514517405735452843
+        CREATOR_ROLE_ID = 1501473138188353616
+        TEAM_ROLE_ID = 1501472062903156756
 
-            priority_until = datetime.fromisoformat(
-                priority_until
+        member_role_ids = {
+            role.id for role in interaction.user.roles
+        }
+
+        is_team = TEAM_ROLE_ID in member_role_ids
+        is_super_elite = SUPER_ELITE_ROLE_ID in member_role_ids
+        is_elite = ELITE_ROLE_ID in member_role_ids
+        is_creator = CREATOR_ROLE_ID in member_role_ids
+
+        # =========================
+        # SQLITE AUTHORIZATION
+        # =========================
+
+        cursor.execute("""
+        SELECT role_type
+        FROM leaderboard_role_authorizations
+        WHERE user_id = ?
+        """, (interaction.user.id,))
+
+        authorization = cursor.fetchone()
+
+        authorized_role = (
+            authorization[0] if authorization else None
+        )
+
+        valid_super_elite = (
+            is_super_elite and authorized_role == "super_elite"
+        )
+
+        valid_elite = (
+            is_elite and authorized_role == "elite"
+        )
+
+        # =========================
+        # PRIORITY DEADLINES
+        # =========================
+
+        priority_role1_until = quest[5]
+        priority_role2_until = quest[6]
+
+        # Compatibility with older quests
+        if not priority_role1_until and quest[4]:
+
+            priority_role1_until = quest[4]
+
+            old_deadline = datetime.fromisoformat(quest[4])
+
+            priority_role2_until = (
+                old_deadline + timedelta(minutes=5)
+            ).isoformat()
+
+        now = datetime.now(UTC)
+
+        if priority_role1_until and priority_role2_until:
+
+            first_deadline = datetime.fromisoformat(
+                priority_role1_until
             )
 
-            if datetime.now(UTC) < priority_until:
+            second_deadline = datetime.fromisoformat(
+                priority_role2_until
+            )
 
-                elite_role = interaction.guild.get_role(
-                    ELITE_CREATOR_ROLE_ID
-                )
+            # =========================
+            # FIRST 5 MINUTES
+            # =========================
 
-                if elite_role not in interaction.user.roles:
-                    remaining = int(
-                        (
-                                priority_until -
-                                datetime.now(UTC)
-                        ).total_seconds() / 60
-                    )
+            if now < first_deadline:
+
+                if not (is_team or valid_super_elite):
 
                     await interaction.response.send_message(
-                        f"🔒 Elite Creator Early Access\n\n"
-                        f"This quest is exclusive to Elite Creators.\n"
-                        f"Available to everyone in "
-                        f"{remaining} minutes.",
+                        "🔒 Super Elite Early Access\n\n"
+                        "During the first 5 minutes, this quest "
+                        "is exclusive to authorized Super Elite Creators.\n\n"
+                        "Elite Creator access begins after 5 minutes.",
                         ephemeral=True
                     )
 
                     return
+
+            # =========================
+            # NEXT 5 MINUTES
+            # =========================
+
+            elif now < second_deadline:
+
+                if not (
+                    is_team
+                    or valid_super_elite
+                    or valid_elite
+                ):
+
+                    await interaction.response.send_message(
+                        "🔒 Priority Access\n\n"
+                        "This quest is currently available to "
+                        "authorized Super Elite and Elite Creators.\n\n"
+                        "Creator access begins after 10 minutes.",
+                        ephemeral=True
+                    )
+
+                    return
+
+            # =========================
+            # AFTER 10 MINUTES
+            # =========================
+
+            else:
+
+                if not is_creator:
+
+                    await interaction.response.send_message(
+                        "🔒 Creator Role Required\n\n"
+                        "You need the Creator role to submit this quest.",
+                        ephemeral=True
+                    )
+
+                    return
+
+        else:
+
+            # Fallback for quests without priority deadlines
+            if not (is_creator or is_team):
+
+                await interaction.response.send_message(
+                    "You need the Creator role to submit this quest.",
+                    ephemeral=True
+                )
+
+                return
+
+        # =========================
+        # EXISTING QUEST DATA
+        # =========================
 
         expires_at = quest[0]
 
@@ -1385,6 +1499,7 @@ class SubmitQuestButton(ui.Button):
                 tweet_link
             )
         )
+
 
 async def send_quest_report(guild, quest_id):
 
@@ -3865,11 +3980,16 @@ async def paid_quest(
 
             created_at = datetime.now(UTC)
 
-            priority_until = (
-                    datetime.now(UTC)
-                    + timedelta(minutes=5)
+            priority_role1_until = (
+                    created_at + timedelta(minutes=5)
             ).isoformat()
 
+            priority_role2_until = (
+                    created_at + timedelta(minutes=10)
+            ).isoformat()
+
+            # Keep the old deadline for compatibility
+            priority_until = priority_role1_until
 
             cursor.execute("""
             INSERT INTO quests (
@@ -3881,11 +4001,13 @@ async def paid_quest(
                 created_by,
                 created_at,
                 priority_until,
+                priority_role1_until,
+                priority_role2_until,
                 max_claims,
                 current_claims,
                 completed
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 str(self.quest_title),
                 str(self.tweet_link),
@@ -3895,6 +4017,8 @@ async def paid_quest(
                 modal_interaction.user.id,
                 created_at.isoformat(),
                 priority_until,
+                priority_role1_until,
+                priority_role2_until,
                 max_claims,
                 0,
                 0
@@ -3950,8 +4074,9 @@ async def paid_quest(
             embed.add_field(
                 name="Priority Access",
                 value=(
-                    "🔒 Elite Creators Only\n"
-                    "First 5 Minutes"
+                    "🥇 **First 5 Minutes:** Super Elite Creators\n"
+                    "🥈 **Next 5 Minutes:** Super Elite + Elite Creators\n"
+                    "🌐 **After 10 Minutes:** All Creators"
                 ),
                 inline=False
             )
@@ -4194,11 +4319,16 @@ Bring in active creators, support each other, and maximize your earnings.
 
 ]
 
+
 # ========================================
 # RANDOM POOL
 # ========================================
 
 announcement_pool = []
+
+ANNOUNCEMENT_INTERVAL = 8 * 60 * 60  # 8 hours
+ANNOUNCEMENT_STATE_FILE = "/data/announcement_state.json"
+
 
 # ========================================
 # SEND RANDOM ANNOUNCEMENT
@@ -4208,11 +4338,26 @@ async def send_random_announcement():
 
     global announcement_pool
 
-    end_ts = get_next_leaderboard_end_timestamp()
+    import json
+    import time
+    import os
 
-    channel = bot.get_channel(
-        REMINDER_CHANNEL_ID
-    )
+    # Load last announcement timestamp
+    try:
+        with open(ANNOUNCEMENT_STATE_FILE, "r") as f:
+            state = json.load(f)
+            last_sent = state.get("last_sent", 0)
+
+    except (FileNotFoundError, json.JSONDecodeError):
+        last_sent = 0
+
+    # Check if 8 hours have passed
+    now = time.time()
+
+    if now - last_sent < ANNOUNCEMENT_INTERVAL:
+        return
+
+    channel = bot.get_channel(REMINDER_CHANNEL_ID)
 
     if not channel:
         return
@@ -4220,17 +4365,28 @@ async def send_random_announcement():
     # Refill pool when empty
     if not announcement_pool:
 
-        announcement_pool = (
-            ANNOUNCEMENTS.copy()
-        )
+        announcement_pool = ANNOUNCEMENTS.copy()
 
-        random.shuffle(
-            announcement_pool
-        )
+        random.shuffle(announcement_pool)
 
     message = announcement_pool.pop()
 
     await channel.send(message)
+
+    # Save timestamp after successful announcement
+    with open(ANNOUNCEMENT_STATE_FILE, "w") as f:
+        json.dump({"last_sent": time.time()}, f)
+
+
+# ========================================
+# REMINDER LOOP
+# ========================================
+
+@tasks.loop(minutes=120)
+async def reminder_loop():
+
+    await send_random_announcement()
+
 
 # ========================================
 # LOOP
@@ -4356,12 +4512,6 @@ async def offense_expiration_loop():
             """, (timer_id,))
 
             conn.commit()
-
-@tasks.loop(minutes=360)
-async def reminder_loop():
-
-    await send_random_announcement()
-
 
 @tasks.loop(minutes=1)
 async def update_priority_access():
@@ -10388,6 +10538,344 @@ class LeaderboardReceivedView(ui.View):
             ephemeral=True
         )
 
+
+@tasks.loop(hours=8)
+async def leaderboard_role_sync():
+
+    print("🔄 Starting VeloraX leaderboard role synchronization...")
+
+    # ======================================
+    # FIND LEADERBOARD CHANNEL AND SERVER
+    # ======================================
+
+    channel = bot.get_channel(LEADERBOARD_CHANNEL)
+
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(LEADERBOARD_CHANNEL)
+        except Exception as e:
+            print(f"❌ Could not find leaderboard channel: {e}")
+            return
+
+    guild = channel.guild
+
+    # ======================================
+    # GET DISCORD ROLES
+    # ======================================
+
+    super_elite_role = guild.get_role(1572124021691261008)
+    elite_role = guild.get_role(1514517405735452843)
+    member_role = guild.get_role(MEMBER_ROLE_ID)
+    admin_role = guild.get_role(ADMIN_ROLE_ID)
+    team_role = guild.get_role(1501472062903156756)
+
+    if not all([
+        super_elite_role,
+        elite_role,
+        member_role,
+        admin_role,
+        team_role
+    ]):
+        print("❌ Role synchronization stopped: One or more roles were not found.")
+        return
+
+    # ======================================
+    # FETCH SERVER MEMBERS
+    # ======================================
+
+    try:
+        guild_members = []
+
+        async for member in guild.fetch_members(limit=None):
+            guild_members.append(member)
+
+    except Exception as e:
+        print(f"❌ Could not fetch server members: {e}")
+        return
+
+    members_by_id = {
+        member.id: member for member in guild_members
+    }
+
+    # ======================================
+    # OPEN DEDICATED SQLITE CONNECTION
+    # ======================================
+
+    sync_conn = None
+
+    assigned_super_elite = 0
+    assigned_elite = 0
+    removed_roles = 0
+    failed_members = 0
+
+    try:
+        sync_conn = sqlite3.connect(DB_PATH, timeout=30)
+        sync_cursor = sync_conn.cursor()
+
+        # ======================================
+        # GET LEADERBOARD USERS
+        # ======================================
+
+        sync_cursor.execute("""
+        SELECT
+            user_id,
+            x_username,
+            points,
+            engagements,
+            quests_created,
+            velorax,
+            hosted_points
+        FROM users
+        ORDER BY velorax DESC,
+                 engagements DESC,
+                 quests_created DESC,
+                 points DESC
+        """)
+
+        users = sync_cursor.fetchall()
+
+        # ======================================
+        # APPLY EXISTING LEADERBOARD FILTERS
+        # ======================================
+
+        filtered_users = []
+
+        for user in users:
+
+            user_id = user[0]
+            member = members_by_id.get(user_id)
+
+            if not member:
+                continue
+
+            # Must have Member role
+            if member_role not in member.roles:
+                continue
+
+            # Exclude admins
+            if admin_role in member.roles:
+                continue
+
+            # Exclude Team
+            if team_role in member.roles:
+                continue
+
+            filtered_users.append(user)
+
+        # ======================================
+        # DETERMINE ROLE ASSIGNMENTS
+        # ======================================
+
+        desired_roles = {}
+
+        for rank, user in enumerate(filtered_users, start=1):
+
+            user_id = user[0]
+
+            if rank <= 50:
+                desired_roles[user_id] = "super_elite"
+
+            elif rank <= 100:
+                desired_roles[user_id] = "elite"
+
+            else:
+                break
+
+        # ======================================
+        # UPDATE DISCORD ROLES + SQLITE
+        # ======================================
+
+        for member in guild_members:
+
+            user_id = member.id
+
+            has_super_elite = super_elite_role in member.roles
+            has_elite = elite_role in member.roles
+
+            desired_role_type = desired_roles.get(user_id)
+
+            try:
+
+                # ----------------------------------
+                # REMOVE OUTDATED ROLE ASSIGNMENTS
+                # ----------------------------------
+
+                if desired_role_type is None:
+
+                    roles_to_remove = []
+
+                    if has_super_elite:
+                        roles_to_remove.append(super_elite_role)
+
+                    if has_elite:
+                        roles_to_remove.append(elite_role)
+
+                    if roles_to_remove:
+
+                        await member.remove_roles(
+                            *roles_to_remove,
+                            reason="VeloraX leaderboard role synchronization"
+                        )
+
+                        removed_roles += len(roles_to_remove)
+
+                    # Remove authorization record
+                    sync_cursor.execute("""
+                    DELETE FROM leaderboard_role_authorizations
+                    WHERE user_id = ?
+                    """, (user_id,))
+
+                    sync_conn.commit()
+
+                    continue
+
+                # ----------------------------------
+                # DETERMINE CORRECT ROLE
+                # ----------------------------------
+
+                if desired_role_type == "super_elite":
+                    desired_role = super_elite_role
+                    old_role = elite_role
+
+                else:
+                    desired_role = elite_role
+                    old_role = super_elite_role
+
+                # Assign correct role first
+                if desired_role not in member.roles:
+
+                    await member.add_roles(
+                        desired_role,
+                        reason="VeloraX leaderboard role assignment"
+                    )
+
+                # Remove opposite role afterward
+                if old_role in member.roles:
+
+                    await member.remove_roles(
+                        old_role,
+                        reason="VeloraX leaderboard rank changed"
+                    )
+
+                # ----------------------------------
+                # SAVE SQLITE AUTHORIZATION
+                # ----------------------------------
+
+                sync_cursor.execute("""
+                INSERT INTO leaderboard_role_authorizations (
+                    user_id,
+                    role_type,
+                    assigned_at
+                )
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id)
+                DO UPDATE SET
+                    role_type = excluded.role_type,
+                    assigned_at = excluded.assigned_at
+                """, (
+                    user_id,
+                    desired_role_type,
+                    datetime.now(UTC).isoformat()
+                ))
+
+                sync_conn.commit()
+
+                if desired_role_type == "super_elite":
+                    assigned_super_elite += 1
+
+                else:
+                    assigned_elite += 1
+
+                # Small delay between qualifying members
+                await asyncio.sleep(0.5)
+
+            except discord.Forbidden:
+
+                failed_members += 1
+
+                print(
+                    f"❌ Missing permission to update roles for "
+                    f"{member.id} ({member})"
+                )
+
+            except discord.HTTPException as e:
+
+                failed_members += 1
+
+                print(
+                    f"❌ Discord error updating {member.id}: {e}"
+                )
+
+            except Exception as e:
+
+                failed_members += 1
+
+                print(
+                    f"❌ Error updating {member.id}: {e}"
+                )
+
+        # ======================================
+        # REMOVE AUTHORIZATION FOR DEPARTED USERS
+        # ======================================
+
+        sync_cursor.execute("""
+        SELECT user_id
+        FROM leaderboard_role_authorizations
+        """)
+
+        authorized_users = sync_cursor.fetchall()
+
+        for row in authorized_users:
+
+            user_id = row[0]
+
+            if user_id not in members_by_id:
+
+                sync_cursor.execute("""
+                DELETE FROM leaderboard_role_authorizations
+                WHERE user_id = ?
+                """, (user_id,))
+
+                sync_conn.commit()
+
+                print(
+                    f"🗑️ Removed departed member authorization: {user_id}"
+                )
+
+        # ======================================
+        # FINISH
+        # ======================================
+
+        print("✅ VeloraX leaderboard synchronization completed.")
+        print(f"Super Elite processed: {assigned_super_elite}")
+        print(f"Elite processed: {assigned_elite}")
+        print(f"Old roles removed: {removed_roles}")
+        print(f"Failed members: {failed_members}")
+
+    except sqlite3.Error as e:
+
+        print(f"❌ Leaderboard SQLite error: {e}")
+
+    except Exception as e:
+
+        print(f"❌ Leaderboard synchronization error: {e}")
+
+    finally:
+
+        if sync_conn is not None:
+            sync_conn.close()
+            print("🔒 Leaderboard SQLite connection closed.")
+
+
+# ==========================================
+# WAIT UNTIL BOT IS READY
+# ==========================================
+
+@leaderboard_role_sync.before_loop
+async def before_leaderboard_role_sync():
+    await bot.wait_until_ready()
+
+    
 @bot.listen("on_message")
 async def delete_x_links(message):
 
@@ -11004,6 +11492,11 @@ async def on_message(message):
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user}")
+
+    if not leaderboard_role_sync.is_running():
+        leaderboard_role_sync.start()
+
+        print("✅ Leaderboard role sync scheduled (every 8 hours).")
 
     if not update_priority_access.is_running():
         update_priority_access.start()
