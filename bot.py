@@ -9,6 +9,8 @@ import os
 import math
 from openpyxl import Workbook
 import random
+import json
+import time
 
 # X links are allowed in these channels
 X_LINK_EXEMPT_CHANNELS = {
@@ -27,6 +29,7 @@ GUILD_ID = 1501471671360553131
 VELORAX_X_USERNAME = "VeloraX_Labs"
 GUILD_OWNER_ID = 488015447417946151
 ADMIN_ROLE_ID = 1501472062903156756  # Team
+TEAM_ROLE_ID = 1501472062903156756
 ELITE_CREATOR_ROLE_ID = 1514517405735452843 # Elite Creator
 MEMBER_ROLE_ID = 1501473138188353616  # Creator
 VERIFIED_ROLE_ID = 1501473283852472380  # Engager
@@ -37,6 +40,7 @@ SUPPORT_CATEGORY_ID = 1501483613529706528
 ADMIN_REVIEW_CHANNEL_ID = 1507604124366147735
 FIRST_OFFENSE_ROLE = 1507613554910433320
 SECOND_OFFENSE_ROLE = 1507613855587766302
+LEADERBOARD_SUSPENDED_ROLE = 1507613855587766302
 WAITING_ROOM_CHANNEL = 1510492366660833350
 ADMIN_LOG_CHANNEL = 1501476619641163927
 ADMIN_DAILY_CREATOR_POINTS = 150
@@ -63,6 +67,23 @@ GOLD_LEADERBOARD_CHANNEL = 1507640098521481236
 SHOP_CHANNEL = 1507640118616391802
 APPROVAL_CHANNEL = 1507640094951997460
 
+# ==========================================
+# SERVER BOOSTER INCENTIVE CONFIGURATION
+# ==========================================
+
+BOOST_INCENTIVE_OWNER_ID = 488015447417946151
+
+SERVER_BOOSTER_ROLE_ID = 1514295010349154354
+
+BOOST_INCENTIVE_CHANNEL_ID = 1501478302102323210
+
+CREATOR_ROLE_ID = 1501473138188353616
+
+BOOST_INCENTIVE_INTERVAL = 7 * 24 * 60 * 60
+
+# Scheduler task reference
+booster_incentive_task = None
+
 MAX_GIVEAWAY_ENTRIES = 3
 RAFFLE_CHANNEL = 1511554965938901023
 RAFFLE_PRIZE = "$10"
@@ -84,6 +105,10 @@ EXCHANGE_OPTIONS = {
 }
 
 invite_cache = {}
+
+restored_report_view_ids = set()
+restored_admin_review_view_ids = set()
+report_recovery_done = False
 
 # ===================== CONFIG =====================
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -2840,6 +2865,874 @@ async def load_persistent_views():
 
     print("All persistent views loaded.")
 
+
+
+# ==========================================
+# COMMUNITY QUEST REPORT VIEW
+# ==========================================
+
+class CommunityQuestReportView(ui.View):
+
+    def __init__(
+        self,
+        quest_id,
+        creator_id,
+        thread_id,
+        claimant_ids,
+        page=0,
+        selected_user_ids=None
+    ):
+
+        super().__init__(timeout=None)
+
+        self.quest_id = quest_id
+        self.creator_id = creator_id
+        self.thread_id = thread_id
+        self.claimant_ids = list(claimant_ids)
+        self.page = page
+        self.selected_user_ids = set(
+            selected_user_ids or []
+        )
+
+        self.page_size = 25
+
+        self.total_pages = max(
+            1,
+            (
+                len(self.claimant_ids) + self.page_size - 1
+            ) // self.page_size
+        )
+
+        self.page = min(
+            max(self.page, 0),
+            self.total_pages - 1
+        )
+
+        self.build_view()
+
+    # ==========================================
+    # SAVE SELECTED USERS
+    # ==========================================
+
+    def save_selection(self):
+
+        conn_report = sqlite3.connect(
+            DB_PATH,
+            timeout=30
+        )
+
+        try:
+
+            conn_report.execute(
+                "PRAGMA busy_timeout = 30000"
+            )
+
+            conn_report.execute("""
+                UPDATE community_quest_report_batches
+                SET selected_user_ids = ?
+                WHERE quest_id = ?
+                AND creator_id = ?
+                AND status = 'open'
+            """, (
+                json.dumps(
+                    sorted(self.selected_user_ids)
+                ),
+                self.quest_id,
+                self.creator_id
+            ))
+
+            conn_report.commit()
+
+        finally:
+            conn_report.close()
+
+    # ==========================================
+    # GET THREAD
+    # ==========================================
+
+    async def get_report_thread(self, guild):
+
+        thread = guild.get_thread(
+            self.thread_id
+        )
+
+        if thread:
+            return thread
+
+        try:
+
+            thread = await bot.fetch_channel(
+                self.thread_id
+            )
+
+            return thread
+
+        except (
+            discord.NotFound,
+            discord.Forbidden,
+            discord.HTTPException
+        ) as e:
+
+            print(
+                f"Could not retrieve report thread "
+                f"{self.thread_id}: {e}"
+            )
+
+            return None
+
+    # ==========================================
+    # BUILD VIEW
+    # ==========================================
+
+    def build_view(self):
+
+        self.clear_items()
+
+        start = self.page * self.page_size
+
+        end = start + self.page_size
+
+        current_ids = self.claimant_ids[start:end]
+
+        guild = bot.get_guild(GUILD_ID)
+
+        options = []
+
+        for user_id in current_ids:
+
+            member = (
+                guild.get_member(user_id)
+                if guild
+                else None
+            )
+
+            label = (
+                member.display_name
+                if member
+                else f"User {user_id}"
+            )
+
+            options.append(
+                discord.SelectOption(
+                    label=label[:100],
+                    value=str(user_id),
+                    default=user_id in self.selected_user_ids
+                )
+            )
+
+        if options:
+
+            select = ui.Select(
+                placeholder="Select members who failed the task",
+                min_values=0,
+                max_values=len(options),
+                options=options,
+                custom_id=f"cq_report_select_{self.quest_id}"
+            )
+
+            async def select_callback(interaction):
+
+                if interaction.user.id != self.creator_id:
+
+                    await interaction.response.send_message(
+                        "❌ Only the quest creator can manage these reports.",
+                        ephemeral=True
+                    )
+
+                    return
+
+                selected_on_page = {
+                    int(value)
+                    for value in select.values
+                }
+
+                self.selected_user_ids.difference_update(
+                    current_ids
+                )
+
+                self.selected_user_ids.update(
+                    selected_on_page
+                )
+
+                self.save_selection()
+
+                await interaction.response.edit_message(
+                    content=self.get_status_text(),
+                    view=self
+                )
+
+            select.callback = select_callback
+
+            self.add_item(select)
+
+        # ==========================================
+        # PREVIOUS PAGE
+        # ==========================================
+
+        previous_button = ui.Button(
+            label="Previous",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.page <= 0,
+            custom_id=f"cq_report_prev_{self.quest_id}"
+        )
+
+        async def previous_callback(interaction):
+
+            if interaction.user.id != self.creator_id:
+
+                await interaction.response.send_message(
+                    "❌ Only the quest creator can manage these reports.",
+                    ephemeral=True
+                )
+
+                return
+
+            self.page -= 1
+
+            self.build_view()
+
+            await interaction.response.edit_message(
+                content=self.get_status_text(),
+                view=self
+            )
+
+        previous_button.callback = previous_callback
+
+        self.add_item(previous_button)
+
+        # ==========================================
+        # NEXT PAGE
+        # ==========================================
+
+        next_button = ui.Button(
+            label="Next",
+            style=discord.ButtonStyle.secondary,
+            disabled=self.page >= self.total_pages - 1,
+            custom_id=f"cq_report_next_{self.quest_id}"
+        )
+
+        async def next_callback(interaction):
+
+            if interaction.user.id != self.creator_id:
+
+                await interaction.response.send_message(
+                    "❌ Only the quest creator can manage these reports.",
+                    ephemeral=True
+                )
+
+                return
+
+            self.page += 1
+
+            self.build_view()
+
+            await interaction.response.edit_message(
+                content=self.get_status_text(),
+                view=self
+            )
+
+        next_button.callback = next_callback
+
+        self.add_item(next_button)
+
+        # ==========================================
+        # SUBMIT REPORT
+        # ==========================================
+
+        submit_button = ui.Button(
+            label="Submit Report",
+            style=discord.ButtonStyle.danger,
+            custom_id=f"cq_report_submit_{self.quest_id}"
+        )
+
+        async def submit_callback(interaction):
+
+            if interaction.user.id != self.creator_id:
+
+                await interaction.response.send_message(
+                    "❌ Only the quest creator can submit reports.",
+                    ephemeral=True
+                )
+
+                return
+
+            if not self.selected_user_ids:
+
+                await interaction.response.send_message(
+                    "❌ Please select at least one member to report.",
+                    ephemeral=True
+                )
+
+                return
+
+            # Only allow actual claimants to be reported.
+            valid_reported_ids = sorted(
+                user_id
+                for user_id in self.selected_user_ids
+                if user_id in self.claimant_ids
+                and user_id != self.creator_id
+            )
+
+            if not valid_reported_ids:
+
+                await interaction.response.send_message(
+                    "❌ No valid claimants were selected.",
+                    ephemeral=True
+                )
+
+                return
+
+            conn_report = sqlite3.connect(
+                DB_PATH,
+                timeout=30
+            )
+
+            try:
+
+                conn_report.execute(
+                    "PRAGMA busy_timeout = 30000"
+                )
+
+                # ======================================
+                # CLAIM REPORTING BATCH
+                # ======================================
+
+                cursor_report = conn_report.cursor()
+
+                cursor_report.execute("""
+                    UPDATE community_quest_report_batches
+                    SET status = 'processing'
+                    WHERE quest_id = ?
+                    AND creator_id = ?
+                    AND status = 'open'
+                """, (
+                    self.quest_id,
+                    self.creator_id
+                ))
+
+                if cursor_report.rowcount != 1:
+
+                    conn_report.rollback()
+
+                    await interaction.response.send_message(
+                        "❌ This reporting period is already "
+                        "submitted or being processed.",
+                        ephemeral=True
+                    )
+
+                    return
+
+                conn_report.commit()
+
+                # ======================================
+                # GET GUILD AND ADMIN CHANNEL
+                # ======================================
+
+                guild = interaction.guild
+
+                admin_channel = guild.get_channel(
+                    ADMIN_REVIEW_CHANNEL_ID
+                )
+
+                if admin_channel is None:
+
+                    try:
+
+                        admin_channel = await bot.fetch_channel(
+                            ADMIN_REVIEW_CHANNEL_ID
+                        )
+
+                    except discord.HTTPException:
+
+                        conn_report.execute("""
+                            UPDATE community_quest_report_batches
+                            SET status = 'open'
+                            WHERE quest_id = ?
+                            AND creator_id = ?
+                            AND status = 'processing'
+                        """, (
+                            self.quest_id,
+                            self.creator_id
+                        ))
+
+                        conn_report.commit()
+
+                        await interaction.response.send_message(
+                            "❌ Admin review channel could not be found. "
+                            "Please try again later.",
+                            ephemeral=True
+                        )
+
+                        return
+
+                await interaction.response.defer(
+                    ephemeral=True
+                )
+
+                # ======================================
+                # GET RAID LINK
+                # ======================================
+
+                raid_data = conn_report.execute("""
+                    SELECT tweet_link
+                    FROM quests
+                    WHERE quest_id = ?
+                """, (
+                    self.quest_id,
+                )).fetchone()
+
+                raid_link = (
+                    raid_data[0]
+                    if raid_data and raid_data[0]
+                    else ""
+                )
+
+                # ======================================
+                # GET COMPLETION THREAD
+                # ======================================
+
+                thread = await self.get_report_thread(
+                    guild
+                )
+
+                if thread is None:
+                    conn_report.execute("""
+                        UPDATE community_quest_report_batches
+                        SET status = 'open'
+                        WHERE quest_id = ?
+                        AND creator_id = ?
+                        AND status = 'processing'
+                    """, (
+                        self.quest_id,
+                        self.creator_id
+                    ))
+
+                    conn_report.commit()
+
+                    return await interaction.followup.send(
+                        "❌ Could not access the Community Quest completion thread. "
+                        "Your report submission was not processed. "
+                        "Please try again later.",
+                        ephemeral=True
+                    )
+
+                # ======================================
+                # CREATE INDIVIDUAL REPORTS
+                # ======================================
+
+                reports_created = 0
+
+                for reported_user_id in valid_reported_ids:
+
+                    # ----------------------------------
+                    # CHECK EXISTING REPORT
+                    # ----------------------------------
+
+                    existing = conn_report.execute("""
+                        SELECT id, admin_message_id
+                        FROM community_quest_reports
+                        WHERE quest_id = ?
+                        AND reported_user_id = ?
+                    """, (
+                        self.quest_id,
+                        reported_user_id
+                    )).fetchone()
+
+                    if existing:
+
+                        report_id = existing[0]
+
+                        # Already has an admin message.
+                        if existing[1] is not None:
+                            continue
+
+                    else:
+
+                        # ----------------------------------
+                        # SAVE REPORT BEFORE SENDING MESSAGE
+                        # ----------------------------------
+
+                        cursor_report.execute("""
+                            INSERT INTO community_quest_reports (
+                                quest_id,
+                                creator_id,
+                                reported_user_id,
+                                admin_message_id,
+                                status,
+                                created_at
+                            )
+                            VALUES (?, ?, ?, NULL, 'pending', ?)
+                        """, (
+                            self.quest_id,
+                            self.creator_id,
+                            reported_user_id,
+                            datetime.now(UTC).isoformat()
+                        ))
+
+                        report_id = cursor_report.lastrowid
+
+                        conn_report.commit()
+
+                    # ----------------------------------
+                    # GET REPORTED MEMBER
+                    # ----------------------------------
+
+                    reported_member = guild.get_member(
+                        reported_user_id
+                    )
+
+                    # ----------------------------------
+                    # BUILD ADMIN REVIEW EMBED
+                    # ----------------------------------
+
+                    embed = discord.Embed(
+                        title="🚨 COMMUNITY QUEST REPORT",
+                        color=discord.Color.red()
+                    )
+
+                    embed.add_field(
+                        name="Quest",
+                        value=f"Quest #{self.quest_id}",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reported Member",
+                        value=f"<@{reported_user_id}>",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reported By",
+                        value=f"<@{self.creator_id}>",
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Status",
+                        value="Pending Admin Review",
+                        inline=False
+                    )
+
+                    if reported_member:
+
+                        embed.set_thumbnail(
+                            url=reported_member.display_avatar.url
+                        )
+
+                    embed.add_field(
+                        name="Reported ID",
+                        value=str(reported_user_id),
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Reporter ID",
+                        value=str(self.creator_id),
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Quest ID",
+                        value=str(self.quest_id),
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Thread ID",
+                        value=str(self.thread_id),
+                        inline=False
+                    )
+
+                    embed.add_field(
+                        name="Raid Link",
+                        value=raid_link or "Not available",
+                        inline=False
+                    )
+
+                    # ----------------------------------
+                    # SEND ADMIN REVIEW MESSAGE
+                    # ----------------------------------
+
+                    admin_message = await admin_channel.send(
+                        embed=embed,
+                        view=ReportReviewView()
+                    )
+
+                    # ----------------------------------
+                    # SAVE ADMIN MESSAGE ID
+                    # ----------------------------------
+
+                    conn_report.execute("""
+                        UPDATE community_quest_reports
+                        SET admin_message_id = ?
+                        WHERE id = ?
+                        AND admin_message_id IS NULL
+                    """, (
+                        admin_message.id,
+                        report_id
+                    ))
+
+                    conn_report.commit()
+
+                    reports_created += 1
+
+                    # ----------------------------------
+                    # NOTIFY COMPLETION THREAD
+                    # ----------------------------------
+
+                    if thread:
+
+                        await thread.send(
+                            f"🚨 <@{self.creator_id}> reported "
+                            f"<@{reported_user_id}> for Quest "
+                            f"**#{self.quest_id}**.\n"
+                            f"The report has been submitted for admin review."
+                        )
+
+                # ======================================
+                # FINISH REPORTING BATCH
+                # ======================================
+
+                conn_report.execute("""
+                    UPDATE community_quest_report_batches
+                    SET
+                        status = 'submitted',
+                        submitted_at = ?
+                    WHERE quest_id = ?
+                    AND creator_id = ?
+                    AND status = 'processing'
+                """, (
+                    datetime.now(UTC).isoformat(),
+                    self.quest_id,
+                    self.creator_id
+                ))
+
+                conn_report.commit()
+
+            except Exception as e:
+
+                print(
+                    f"Community quest report submission error: {e}"
+                )
+
+                try:
+
+                    conn_report.execute("""
+                        UPDATE community_quest_report_batches
+                        SET status = 'needs_manual_review'
+                        WHERE quest_id = ?
+                        AND creator_id = ?
+                        AND status = 'processing'
+                    """, (
+                        self.quest_id,
+                        self.creator_id
+                    ))
+
+                    conn_report.commit()
+
+                except Exception as reset_error:
+
+                    print(
+                        f"Could not reset report batch: {reset_error}"
+                    )
+
+                await interaction.followup.send(
+                    "❌ Something went wrong while submitting "
+                    "the reports.\n"
+                    "The reporting period has been reopened "
+                    "where possible. Please try again or contact the team.",
+                    ephemeral=True
+                )
+
+                return
+
+            finally:
+                conn_report.close()
+
+            # ======================================
+            # DISABLE REPORTING CONTROLS
+            # ======================================
+
+            for item in self.children:
+                item.disabled = True
+
+            await interaction.message.edit(
+                content=(
+                    f"✅ Reports submitted for Quest #{self.quest_id}.\n"
+                    f"Reports created: **{reports_created}**\n"
+                    f"Admin review is now pending."
+                ),
+                view=self
+            )
+
+            await interaction.followup.send(
+                "✅ Your reports have been submitted for admin review.",
+                ephemeral=True
+            )
+
+        submit_button.callback = submit_callback
+
+        self.add_item(submit_button)
+
+        # ==========================================
+        # EVERYONE COMPLETED
+        # ==========================================
+
+        completed_button = ui.Button(
+            label="Everyone Completed",
+            style=discord.ButtonStyle.success,
+            custom_id=f"cq_report_done_{self.quest_id}"
+        )
+
+        async def completed_callback(interaction):
+
+            if interaction.user.id != self.creator_id:
+                await interaction.response.send_message(
+                    "❌ Only the quest creator can confirm this.",
+                    ephemeral=True
+                )
+
+                return
+
+            # Check completion thread BEFORE closing the batch
+            thread = await self.get_report_thread(
+                interaction.guild
+            )
+
+            if thread is None:
+                await interaction.response.send_message(
+                    "❌ Could not access the Community Quest completion thread. "
+                    "The reporting period remains open. Please try again later.",
+                    ephemeral=True
+                )
+
+                return
+
+            conn_report = sqlite3.connect(
+                DB_PATH,
+                timeout=30
+            )
+
+            try:
+
+                conn_report.execute(
+                    "PRAGMA busy_timeout = 30000"
+                )
+
+                cursor_report = conn_report.cursor()
+
+                cursor_report.execute("""
+                    UPDATE community_quest_report_batches
+                    SET
+                        status = 'everyone_completed',
+                        submitted_at = ?
+                    WHERE quest_id = ?
+                    AND creator_id = ?
+                    AND status = 'open'
+                """, (
+                    datetime.now(UTC).isoformat(),
+                    self.quest_id,
+                    self.creator_id
+                ))
+
+                if cursor_report.rowcount != 1:
+                    conn_report.rollback()
+
+                    await interaction.response.send_message(
+                        "❌ This reporting period is already closed.",
+                        ephemeral=True
+                    )
+
+                    return
+
+                conn_report.commit()
+
+            finally:
+                conn_report.close()
+
+            # Send confirmation to completion thread
+            try:
+
+                await thread.send(
+                    f"✅ <@{self.creator_id}> confirmed that everyone "
+                    f"completed the task for Quest **#{self.quest_id}**."
+                )
+
+            except Exception as error:
+
+                print(
+                    f"❌ Everyone Completed notification error: {error!r}"
+                )
+
+                conn_recovery = sqlite3.connect(
+                    DB_PATH,
+                    timeout=30
+                )
+
+                try:
+
+                    conn_recovery.execute(
+                        "PRAGMA busy_timeout = 30000"
+                    )
+
+                    conn_recovery.execute("""
+                        UPDATE community_quest_report_batches
+                        SET status = 'needs_manual_review'
+                        WHERE quest_id = ?
+                        AND creator_id = ?
+                        AND status = 'everyone_completed'
+                    """, (
+                        self.quest_id,
+                        self.creator_id
+                    ))
+
+                    conn_recovery.commit()
+
+                finally:
+                    conn_recovery.close()
+
+                await interaction.response.send_message(
+                    "⚠️ Your confirmation could not be posted in the "
+                    "completion thread. This batch has been flagged for "
+                    "manual staff review.",
+                    ephemeral=True
+                )
+
+                return
+
+            for item in self.children:
+                item.disabled = True
+
+            await interaction.response.edit_message(
+                content=(
+                    f"✅ Reporting completed for Quest #{self.quest_id}.\n"
+                    f"The creator confirmed that everyone completed the task."
+                ),
+                view=self
+            )
+
+        completed_button.callback = completed_callback
+
+        self.add_item(completed_button)
+
+    # ==========================================
+    # STATUS TEXT
+    # ==========================================
+
+    def get_status_text(self):
+
+        return (
+            f"📋 **Quest #{self.quest_id} Reporting**\n\n"
+            f"Select the members who failed to complete the task.\n"
+            f"Selected members: **{len(self.selected_user_ids)}**\n"
+            f"Page: **{self.page + 1}/{self.total_pages}**\n\n"
+            f"You can select members across multiple pages.\n"
+            f"When finished, choose **Submit Report** or "
+            f"**Everyone Completed**."
+        )
+
+
 # =========================
 # COMMUNITY QUEST VIEW
 # =========================
@@ -2872,19 +3765,15 @@ class CommunityQuestView(ui.View):
         custom_id="community_claim_points"
     )
     async def claim_points(
-            self,
-            interaction: discord.Interaction,
-            button: ui.Button
+        self,
+        interaction: discord.Interaction,
+        button: ui.Button
     ):
 
-        print(
-            f"BUTTON CLICKED | quest_id={self.quest_id}"
-        )
+        print(f"BUTTON CLICKED | quest_id={self.quest_id}")
 
         try:
-            await interaction.response.defer(
-                ephemeral=True
-            )
+            await interaction.response.defer(ephemeral=True)
         except discord.NotFound:
             return
         except discord.InteractionResponded:
@@ -2892,160 +3781,192 @@ class CommunityQuestView(ui.View):
         except discord.HTTPException:
             pass
 
-        # =========================
-        # CHECK DUPLICATE CLAIM
-        # =========================
-
         guild = interaction.guild
 
-        cursor.execute("""
-        SELECT id
-        FROM quest_claims
-        WHERE quest_id = ?
-        AND user_id = ?
-        """, (
-            self.quest_id,
-            interaction.user.id
-        ))
+        # =========================
+        # ATOMIC CLAIM TRANSACTION
+        # =========================
 
-        existing_claim = cursor.fetchone()
+        claim_conn = sqlite3.connect(DB_PATH, timeout=30)
+        claim_conn.execute("PRAGMA busy_timeout = 30000")
+        claim_cursor = claim_conn.cursor()
 
-        if existing_claim:
-            try:
+        try:
+            claim_conn.execute("BEGIN IMMEDIATE")
+
+            # CHECK DUPLICATE CLAIM
+            claim_cursor.execute("""
+                SELECT id
+                FROM quest_claims
+                WHERE quest_id = ?
+                AND user_id = ?
+            """, (
+                self.quest_id,
+                interaction.user.id
+            ))
+
+            existing_claim = claim_cursor.fetchone()
+
+            if existing_claim:
+                claim_conn.rollback()
+                claim_conn.close()
+
                 await interaction.followup.send(
                     "❌ You already claimed this quest.",
                     ephemeral=True
                 )
-            except discord.HTTPException:
-                pass
+                return
 
-            return
+            # GET QUEST DATA
+            claim_cursor.execute("""
+                SELECT
+                    created_by,
+                    current_claims,
+                    max_claims,
+                    completed,
+                    title,
+                    message_id,
+                    ping_message_id,
+                    reward_multiplier
+                FROM quests
+                WHERE quest_id = ?
+            """, (self.quest_id,))
 
-        # =========================
-        # GET QUEST DATA
-        # =========================
+            quest_data = claim_cursor.fetchone()
 
-        cursor.execute("""
-        SELECT
-            created_by,
-            current_claims,
-            max_claims,
-            completed,
-            title,
-            message_id,
-            ping_message_id
-        FROM quests
-        WHERE quest_id = ?
-        """, (self.quest_id,))
+            if not quest_data:
+                claim_conn.rollback()
+                claim_conn.close()
 
-        quest_data = cursor.fetchone()
-
-        if not quest_data:
-            try:
                 await interaction.followup.send(
-                    "Quest not found.",
+                    "❌ Quest not found.",
                     ephemeral=True
                 )
-            except discord.HTTPException:
-                pass
-            return
+                return
 
-        created_by = quest_data[0]
-        current_claims = quest_data[1]
-        max_claims = quest_data[2]
-        completed = quest_data[3]
-        quest_title = quest_data[4]
-        message_id = quest_data[5]
-        ping_message_id = quest_data[6]
+            created_by = quest_data[0]
+            current_claims = quest_data[1]
+            max_claims = quest_data[2]
+            completed = quest_data[3]
+            quest_title = quest_data[4]
+            message_id = quest_data[5]
+            ping_message_id = quest_data[6]
 
-        # =========================
-        # CREATOR CANNOT CLAIM
-        # =========================
+            reward_multiplier = quest_data[7] or 1
 
-        if interaction.user.id == created_by:
-            try:
+            creator_points_reward = reward_multiplier
+            velorax_reward = reward_multiplier
+
+            # CREATOR CANNOT CLAIM
+            if interaction.user.id == created_by:
+                claim_conn.rollback()
+                claim_conn.close()
+
                 await interaction.followup.send(
                     "❌ You cannot claim your own quest.",
                     ephemeral=True
                 )
-            except discord.HTTPException:
-                pass
-            return
+                return
 
-        # =========================
-        # QUEST FULL
-        # =========================
+            # QUEST FULL
+            if completed or current_claims >= max_claims:
+                claim_conn.rollback()
+                claim_conn.close()
 
-        if completed or current_claims >= max_claims:
-            try:
                 await interaction.followup.send(
                     "❌ This quest is already completed.",
                     ephemeral=True
                 )
-            except discord.HTTPException:
+                return
+
+            # ATOMICALLY RESERVE ONE CLAIM SLOT
+            claim_cursor.execute("""
+                UPDATE quests
+                SET current_claims = current_claims + 1
+                WHERE quest_id = ?
+                AND completed = 0
+                AND current_claims < max_claims
+            """, (self.quest_id,))
+
+            if claim_cursor.rowcount != 1:
+                claim_conn.rollback()
+                claim_conn.close()
+
+                await interaction.followup.send(
+                    "❌ This quest is already completed.",
+                    ephemeral=True
+                )
+                return
+
+            # CALCULATE UPDATED CLAIMS
+            updated_claims = current_claims + 1
+            updated_max = max_claims
+
+            # MARK COMPLETED INSIDE THE SAME TRANSACTION
+            if updated_claims >= updated_max:
+                claim_cursor.execute("""
+                    UPDATE quests
+                    SET completed = 1
+                    WHERE quest_id = ?
+                """, (self.quest_id,))
+
+            # GIVE REWARDS
+            claim_cursor.execute("""
+                UPDATE users
+                SET
+                    points = COALESCE(points, 0) + ?,
+                    engagements = COALESCE(engagements, 0) + 1,
+                    velorax = COALESCE(velorax, 0) + ?
+                WHERE user_id = ?
+            """, (
+                creator_points_reward,
+                velorax_reward,
+                interaction.user.id
+            ))
+
+            # SAVE CLAIM
+            claim_cursor.execute("""
+                INSERT INTO quest_claims (
+                    quest_id,
+                    quest_title,
+                    user_id,
+                    claimed_at
+                )
+                VALUES (?, ?, ?, ?)
+            """, (
+                self.quest_id,
+                quest_title,
+                interaction.user.id,
+                datetime.now(UTC).isoformat()
+            ))
+
+            # SAVE EVERYTHING TOGETHER
+            claim_conn.commit()
+
+        except Exception as e:
+            try:
+                claim_conn.rollback()
+            except Exception:
                 pass
+
+            print(f"Atomic quest claim error: {e}")
+
+            try:
+                claim_conn.close()
+            except Exception:
+                pass
+
+            await interaction.followup.send(
+                "❌ Something went wrong while claiming this quest. Please try again.",
+                ephemeral=True
+            )
             return
 
-        # =========================
-        # GIVE REWARDS
-        # =========================
-
-        cursor.execute("""
-        UPDATE users
-        SET
-            points = COALESCE(points, 0) + 1,
-            engagements = COALESCE(engagements, 0) + 1,
-            velorax = COALESCE(velorax,0) + 1
-        WHERE user_id = ?
-        """, (interaction.user.id,))
-
-        # =========================
-        # INCREASE CLAIM COUNT
-        # =========================
-
-        cursor.execute("""
-        UPDATE quests
-        SET current_claims = current_claims + 1
-        WHERE quest_id = ?
-        """, (self.quest_id,))
-
-        # =========================
-        # SAVE CLAIM
-        # =========================
-
-        cursor.execute("""
-        INSERT INTO quest_claims (
-            quest_id,
-            quest_title,
-            user_id,
-            claimed_at
-        )
-        VALUES (?, ?, ?, ?)
-        """, (
-            self.quest_id,
-            self.quest_title,
-            interaction.user.id,
-            datetime.now(UTC).isoformat()
-        ))
-
-        conn.commit()
-
-        # =========================
-        # CHECK UPDATED CLAIMS
-        # =========================
-
-        cursor.execute("""
-        SELECT
-            current_claims,
-            max_claims
-        FROM quests
-        WHERE quest_id = ?
-        """, (self.quest_id,))
-
-        updated_quest = cursor.fetchone()
-
-        updated_claims = updated_quest[0]
-        updated_max = updated_quest[1]
+        finally:
+            try:
+                claim_conn.close()
+            except Exception:
+                pass
 
         # =========================
         # UPDATE QUEST EMBED
@@ -3073,8 +3994,8 @@ class CommunityQuestView(ui.View):
             live_embed.add_field(
                 name="Reward",
                 value=(
-                    ":gem: +1 Creator Points\n"
-                    ":star2: +1 Velorax"
+                    f"💎 +{creator_points_reward} Creator Points\n"
+                    f"🌟 +{velorax_reward} Velorax"
                 ),
                 inline=False
             )
@@ -3124,18 +4045,6 @@ class CommunityQuestView(ui.View):
 
         if updated_claims >= updated_max:
 
-            cursor.execute("""
-            UPDATE quests
-            SET completed = 1
-            WHERE quest_id = ?
-            """, (self.quest_id,))
-
-            conn.commit()
-
-            # =========================
-            # GET QUEST MESSAGE
-            # =========================
-
             try:
 
                 quest_channel = guild.get_channel(QUEST_CHANNEL)
@@ -3158,12 +4067,164 @@ class CommunityQuestView(ui.View):
                 # =========================
 
                 cursor.execute("""
-                SELECT user_id
-                FROM quest_claims
-                WHERE quest_id = ?
+                    SELECT user_id
+                    FROM quest_claims
+                    WHERE quest_id = ?
                 """, (self.quest_id,))
 
                 claimers = cursor.fetchall()
+
+                # ==========================================
+                # LEADERBOARD SUSPENSION RECOVERY
+                # ==========================================
+
+                leaderboard_suspended_role = guild.get_role(1507613855587766302)
+                second_offense_role = guild.get_role(SECOND_OFFENSE_ROLE)
+
+                logs_channel = guild.get_channel(LOGS_CHANNEL)
+
+                for claimer_row in claimers:
+
+                    claimer_id = claimer_row[0]
+                    claimer_member = guild.get_member(claimer_id)
+
+                    # Only suspended members participate in recovery
+                    if not claimer_member:
+                        continue
+
+                    if not leaderboard_suspended_role:
+                        continue
+
+                    if leaderboard_suspended_role not in claimer_member.roles:
+                        continue
+
+                    if not second_offense_role:
+                        print("❌ Second Offense role could not be found.")
+                        continue
+
+                    # ======================================
+                    # INCREASE RECOVERY PROGRESS
+                    # ======================================
+
+                    cursor.execute("""
+                        UPDATE users
+                        SET recovery_quests = MIN(
+                            COALESCE(recovery_quests, 0) + 1,
+                            20
+                        )
+                        WHERE user_id = ?
+                    """, (claimer_id,))
+
+                    conn.commit()
+
+                    cursor.execute("""
+                        SELECT recovery_quests
+                        FROM users
+                        WHERE user_id = ?
+                    """, (claimer_id,))
+
+                    recovery_result = cursor.fetchone()
+
+                    if not recovery_result:
+                        continue
+
+                    recovery_progress = recovery_result[0]
+                    remaining_quests = max(0, 20 - recovery_progress)
+
+                    # ======================================
+                    # RECOVERY COMPLETED
+                    # ======================================
+
+                    if recovery_progress >= 20:
+
+                        recovery_expires = (
+                                datetime.now(UTC) + timedelta(days=7)
+                        )
+
+                        try:
+
+                            # Assign Second Offense first
+                            if second_offense_role not in claimer_member.roles:
+                                await claimer_member.add_roles(second_offense_role)
+
+                            # Remove Leaderboard Suspension
+                            if leaderboard_suspended_role in claimer_member.roles:
+                                await claimer_member.remove_roles(
+                                    leaderboard_suspended_role
+                                )
+
+                            # Start a fresh Second Offense timer only if one
+                            # does not already exist.
+                            cursor.execute("""
+                                SELECT id
+                                FROM offense_timers
+                                WHERE user_id = ?
+                                AND offense_type = 'second'
+                                LIMIT 1
+                            """, (claimer_id,))
+
+                            existing_timer = cursor.fetchone()
+
+                            if not existing_timer:
+                                cursor.execute("""
+                                    DELETE FROM offense_timers
+                                    WHERE user_id = ?
+                                """, (claimer_id,))
+
+                                cursor.execute("""
+                                    INSERT INTO offense_timers (
+                                        user_id,
+                                        offense_type,
+                                        expires_at
+                                    )
+                                    VALUES (?, ?, ?)
+                                """, (
+                                    claimer_id,
+                                    "second",
+                                    recovery_expires.isoformat()
+                                ))
+
+                                conn.commit()
+
+                            if logs_channel:
+                                await logs_channel.send(
+                                    f"🎉 LEADERBOARD SUSPENSION LIFTED\n\n"
+                                    f"👤 Member: {claimer_member.mention}\n"
+                                    f"🏆 Quest: {self.quest_title}\n\n"
+                                    f"✅ Recovery Progress: **20/20**\n"
+                                    f"⛔ Leaderboard Suspended role removed.\n"
+                                    f"⚠️ Second Offense role assigned.\n"
+                                    f"⏳ Second Offense expires: "
+                                    f"<t:{int(recovery_expires.timestamp())}:F>"
+                                )
+
+                            print(
+                                f"✅ {claimer_member} completed suspension recovery."
+                            )
+
+                        except discord.HTTPException as e:
+
+                            print(
+                                f"❌ Could not complete recovery role changes "
+                                f"for {claimer_id}: {e}"
+                            )
+
+                    # ======================================
+                    # RECOVERY STILL IN PROGRESS
+                    # ======================================
+
+                    else:
+
+                        if logs_channel:
+                            await logs_channel.send(
+                                f"⛔ LEADERBOARD RECOVERY PROGRESS\n\n"
+                                f"👤 Member: {claimer_member.mention}\n"
+                                f"🏆 Quest: {self.quest_title}\n\n"
+                                f"✅ Successful Community Quests: "
+                                f"**{recovery_progress}/20**\n"
+                                f"📌 Remaining: **{remaining_quests}**\n"
+                                f"Status: Leaderboard Suspended"
+                            )
 
                 claimer_list = []
 
@@ -3235,6 +4296,86 @@ class CommunityQuestView(ui.View):
                     await thread.send(
                         "\n".join(chunk)
                     )
+
+                # ==========================================
+                # CREATE REPORTING BATCH
+                # ==========================================
+
+                claimer_ids = [
+                    row[0] for row in claimers
+                ]
+
+                report_conn = sqlite3.connect(
+                    DB_PATH,
+                    timeout=30
+                )
+
+                try:
+
+                    report_conn.execute("""
+                        INSERT OR IGNORE INTO community_quest_report_batches (
+                            quest_id,
+                            creator_id,
+                            thread_id,
+                            status,
+                            submitted_at,
+                            selected_user_ids
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        self.quest_id,
+                        created_by,
+                        thread.id,
+                        "open",
+                        "",
+                        "[]"
+                    ))
+
+                    report_conn.commit()
+
+                finally:
+                    report_conn.close()
+
+                # ==========================================
+                # SEND REPORTING CONTROLS
+                # ==========================================
+
+                report_view = CommunityQuestReportView(
+                    quest_id=self.quest_id,
+                    creator_id=created_by,
+                    thread_id=thread.id,
+                    claimant_ids=claimer_ids
+                )
+
+                report_control_message = await thread.send(
+                    content=report_view.get_status_text(),
+                    view=report_view
+                )
+
+                # ==========================================
+                # SAVE CONTROL MESSAGE ID
+                # ==========================================
+
+                report_conn = sqlite3.connect(
+                    DB_PATH,
+                    timeout=30
+                )
+
+                try:
+
+                    report_conn.execute("""
+                        UPDATE community_quest_report_batches
+                        SET control_message_id = ?
+                        WHERE quest_id = ?
+                    """, (
+                        report_control_message.id,
+                        self.quest_id
+                    ))
+
+                    report_conn.commit()
+
+                finally:
+                    report_conn.close()
 
                 # =========================
                 # EDIT ORIGINAL QUEST MESSAGE
@@ -3325,7 +4466,7 @@ class CommunityQuestView(ui.View):
 
                         await ping_message.delete()
 
-                except:
+                except Exception:
                     pass
 
             except Exception as e:
@@ -3336,9 +4477,9 @@ class CommunityQuestView(ui.View):
         # =========================
 
         cursor.execute("""
-        SELECT points, velorax, engagements
-        FROM users
-        WHERE user_id = ?
+            SELECT points, velorax, engagements
+            FROM users
+            WHERE user_id = ?
         """, (interaction.user.id,))
 
         result = cursor.fetchone()
@@ -3346,8 +4487,6 @@ class CommunityQuestView(ui.View):
         total_points = result[0] if result else 0
         total_velorax = result[1] if result else 0
         total_engagements = result[2] if result else 0
-
-
 
         # =========================
         # LOG CLAIM
@@ -3362,25 +4501,28 @@ class CommunityQuestView(ui.View):
                     f"**Member:** {interaction.user.mention}\n"
                     f"**Quest:** {self.quest_title}\n\n"
                     f"**Rewards:**\n"
-                    f"+1 Creator Points\n"
-                    f"+1 Velorax\n\n"
+                    f"+{creator_points_reward} Creator Points\n"
+                    f"+{velorax_reward} Velorax\n\n"
                     f"**Totals:**\n"
                     f"💎 Creator Points: {total_points}\n"
-                    f":star2: Velorax: {total_velorax}"
+                    f"🌟 Velorax: {total_velorax}"
                 )
             except discord.HTTPException:
                 pass
 
+        # =========================
+        # CONFIRM CLAIM
+        # =========================
+
         try:
             await interaction.followup.send(
                 "✅ Quest claimed!\n\n"
-                "💎 +1 Creator Points\n"
-                ":star2: +1 Velorax",
+                f"💎 +{creator_points_reward} Creator Points\n"
+                f"🌟 +{velorax_reward} Velorax",
                 ephemeral=True
             )
         except discord.HTTPException:
             pass
-
 
 class MyBot(commands.Bot):
 
@@ -4425,6 +5567,7 @@ async def offense_expiration_loop():
 
     first_role = guild.get_role(FIRST_OFFENSE_ROLE)
     second_role = guild.get_role(SECOND_OFFENSE_ROLE)
+    leaderboard_suspended_role = guild.get_role(1507613855587766302)
 
     report_channel = guild.get_channel(REPORT_CHANNEL)
 
@@ -4454,11 +5597,27 @@ async def offense_expiration_loop():
             conn.commit()
             continue
 
+        # Never downgrade or clear an actively suspended member
+        if (
+                leaderboard_suspended_role
+                and leaderboard_suspended_role in member.roles
+        ):
+            cursor.execute("""
+                DELETE FROM offense_timers
+                WHERE id = ?
+            """, (timer_id,))
+            conn.commit()
+            continue
+            
         # SECOND OFFENSE EXPIRES
         if offense_type == "second":
 
             if second_role in member.roles:
                 await member.remove_roles(second_role)
+
+            # Restore First Offense role
+            if first_role not in member.roles:
+                await member.add_roles(first_role)
 
             if report_channel:
                 await report_channel.send(
@@ -4718,12 +5877,14 @@ class ProfileHistoryView(ui.View):
             view=self
         )
 
+
 @bot.tree.command(name="profile")
 @app_commands.describe(member="Select member")
 async def profile(
         interaction: discord.Interaction,
         member: discord.Member
 ):
+
     if interaction.channel.id != STATS_CHANNEL:
         stats_channel = get_channel(
             interaction.guild,
@@ -4739,7 +5900,17 @@ async def profile(
         return
 
     cursor.execute("""
-    SELECT x_username, points, gold_points, quests_completed, quests_denied, engagements, quests_created, velorax, hosted_points
+    SELECT
+        x_username,
+        points,
+        gold_points,
+        quests_completed,
+        quests_denied,
+        engagements,
+        quests_created,
+        velorax,
+        hosted_points,
+        COALESCE(recovery_quests, 0)
     FROM users
     WHERE user_id = ?
     """, (member.id,))
@@ -4770,10 +5941,20 @@ async def profile(
             "User not registered.",
             ephemeral=True
         )
-
         return
 
-    x_username, points, gold_points, completed, denied, engagements, quests_created, velorax, hosted_points = data
+    (
+        x_username,
+        points,
+        gold_points,
+        completed,
+        denied,
+        engagements,
+        quests_created,
+        velorax,
+        hosted_points,
+        recovery_quests
+    ) = data
 
     print(
         "PROFILE DEBUG",
@@ -4786,9 +5967,7 @@ async def profile(
     SELECT total_earned
     FROM creator_earnings
     WHERE user_id = ?
-    """, (
-        member.id,
-    ))
+    """, (member.id,))
 
     earned_data = cursor.fetchone()
 
@@ -4802,15 +5981,58 @@ async def profile(
     SELECT offense_type, expires_at
     FROM offense_timers
     WHERE user_id = ?
-    """, (
-        member.id,
-    ))
+    """, (member.id,))
 
     offense_data = cursor.fetchone()
 
+    # ==========================================
+    # ROLE STATUS
+    # ==========================================
+
+    leaderboard_suspended_role = interaction.guild.get_role(
+        1507613855587766302
+    )
+
+    team_role = interaction.guild.get_role(
+        1501472062903156756
+    )
+
+    is_suspended = (
+        leaderboard_suspended_role is not None
+        and leaderboard_suspended_role in member.roles
+    )
+
+    is_team = (
+        team_role is not None
+        and team_role in member.roles
+    )
+
+    is_admin = any(
+        role.id == ADMIN_ROLE_ID
+        for role in member.roles
+    )
+
+    # ==========================================
+    # PENALTY STATUS
+    # ==========================================
+
     penalty_text = "✅ No Active Penalties"
 
-    if offense_data:
+    if is_suspended:
+
+        remaining = max(
+            0,
+            20 - recovery_quests
+        )
+
+        penalty_text = (
+            "⛔ Leaderboard Suspended\n"
+            f"Recovery Progress: {recovery_quests}/20\n"
+            f"Remaining: {remaining} successful Community Quests\n"
+            "Next Status: Second Offense"
+        )
+
+    elif offense_data:
 
         offense_type, expires_at = offense_data
 
@@ -4834,9 +6056,14 @@ async def profile(
 
             penalty_text = (
                 "🚨 Second Offense\n"
-                f"Expires: <t:{expiry_ts}:F>\n"
+                f"Downgrades to First Offense: "
+                f"<t:{expiry_ts}:F>\n"
                 f"(<t:{expiry_ts}:R>)"
             )
+
+    # ==========================================
+    # LEADERBOARD RANKING
+    # ==========================================
 
     filtered_users = []
 
@@ -4860,26 +6087,51 @@ async def profile(
         if not leaderboard_member:
             continue
 
-        # Must have creator/member role
+        # Must have Member role
         if not any(
-                role.id == MEMBER_ROLE_ID
-                for role in leaderboard_member.roles
+            role.id == MEMBER_ROLE_ID
+            for role in leaderboard_member.roles
         ):
             continue
 
-        # Exclude admins
+        # Exclude Admins
         if any(
-                role.id == ADMIN_ROLE_ID
-                for role in leaderboard_member.roles
+            role.id == ADMIN_ROLE_ID
+            for role in leaderboard_member.roles
+        ):
+            continue
+
+        # Exclude Team
+        if any(
+            role.id == 1501472062903156756
+            for role in leaderboard_member.roles
+        ):
+            continue
+
+        # Exclude Leaderboard Suspended
+        if any(
+            role.id == 1507613855587766302
+            for role in leaderboard_member.roles
         ):
             continue
 
         filtered_users.append(row[0])
 
-    if member.id in filtered_users:
+    if is_suspended:
+        rank_text = "Leaderboard Suspended"
+
+    elif is_team or is_admin:
+        rank_text = "Team/Admin (Unranked)"
+
+    elif member.id in filtered_users:
         rank_text = f"#{filtered_users.index(member.id) + 1}"
+
     else:
-        rank_text = "Admin (Unranked)"
+        rank_text = "Unranked"
+
+    # ==========================================
+    # MAIN PROFILE EMBED
+    # ==========================================
 
     embed = discord.Embed(
         title=f"{member.display_name} - Rank {rank_text}",
@@ -4938,10 +6190,30 @@ async def profile(
         inline=True
     )
 
-    if hosted_points >= 325:
+    # ==========================================
+    # LEADERBOARD ELIGIBILITY
+    # ==========================================
+
+    if is_suspended:
 
         eligibility_text = (
-            f"✅ Eligible for Leaderboard Rewards\n"
+            "⛔ Not Eligible\n"
+            "Leaderboard access is suspended.\n"
+            f"Recovery Progress: {recovery_quests}/20"
+        )
+
+    elif is_team or is_admin:
+
+        eligibility_text = (
+            "⚪ Not Applicable\n"
+            "Team/Admin members are excluded "
+            "from leaderboard rankings."
+        )
+
+    elif hosted_points >= 325:
+
+        eligibility_text = (
+            "✅ Eligible for Leaderboard Rewards\n"
         )
 
     else:
@@ -4949,8 +6221,9 @@ async def profile(
         needed = 325 - hosted_points
 
         eligibility_text = (
-            f"❌ Not Yet Eligible\n"
-            f"Need {needed} more Creator Points hosted in Quest"
+            "❌ Not Yet Eligible\n"
+            f"Need {needed} more Creator Points "
+            "hosted in Quest"
         )
 
     embed.add_field(
@@ -4970,6 +6243,10 @@ async def profile(
         value=f"https://x.com/{x_username}",
         inline=False
     )
+
+    # ==========================================
+    # PAID QUEST HISTORY
+    # ==========================================
 
     history_pages = []
 
@@ -4991,6 +6268,7 @@ async def profile(
                 reply_link,
                 completed_at
         ) in page_data:
+
             quest_channel = get_channel(
                 interaction.guild,
                 PAID_QUEST_CHANNEL
@@ -5032,6 +6310,7 @@ async def profile(
         history_pages.append(page_embed)
 
     if not history_pages:
+
         empty_embed = discord.Embed(
             title="📜 Paid Quests History",
             description="No approved paid quests yet.",
@@ -5040,9 +6319,9 @@ async def profile(
 
         history_pages.append(empty_embed)
 
-    # =========================
+    # ==========================================
     # SEND RESPONSE ONCE
-    # =========================
+    # ==========================================
 
     view = ProfileHistoryView(
         embed,
@@ -5813,12 +7092,34 @@ async def on_member_join(member):
     except Exception as e:
         print(f"on_member_join error: {e}")
 
+
+# ==========================================
+# CHECK UNRESOLVED COMMUNITY QUEST REPORTS
+# ==========================================
+
+def get_open_community_quest_report(user_id):
+
+    cursor.execute("""
+        SELECT quest_id
+        FROM community_quest_report_batches
+        WHERE creator_id = ?
+        AND status IN ('open', 'processing', 'needs_manual_review')
+        ORDER BY quest_id ASC
+        LIMIT 1
+    """, (user_id,))
+
+    result = cursor.fetchone()
+
+    return result[0] if result else None
+
+
 # =========================
 # CREATE QUEST COMMAND
 # =========================
 
 @bot.tree.command(name="create_quest")
 async def create_quest(interaction: discord.Interaction):
+
     # =========================
     # ROLE CHECK
     # =========================
@@ -5839,7 +7140,6 @@ async def create_quest(interaction: discord.Interaction):
             "❌ No permission.",
             ephemeral=True
         )
-
         return
 
     # =========================
@@ -5852,8 +7152,6 @@ async def create_quest(interaction: discord.Interaction):
 
             super().__init__(title="Create Community Quest")
 
-            # QUEST TITLE
-
             self.quest_title = ui.TextInput(
                 label="Quest Title",
                 placeholder="Enter quest title",
@@ -5862,8 +7160,6 @@ async def create_quest(interaction: discord.Interaction):
             )
 
             self.add_item(self.quest_title)
-
-            # TWEET LINK
 
             self.tweet_link = ui.TextInput(
                 label="Tweet Link",
@@ -5882,21 +7178,16 @@ async def create_quest(interaction: discord.Interaction):
 
             self.add_item(self.point_budget)
 
-
-
-        async def on_submit(
-                self,
-                modal_interaction: discord.Interaction
-        ):
+        async def on_submit(self, modal_interaction: discord.Interaction):
 
             # =========================
             # GET USER DATA
             # =========================
 
             cursor.execute("""
-            SELECT x_username, points
-            FROM users
-            WHERE user_id = ?
+                SELECT x_username, points, last_community_quest_at
+                FROM users
+                WHERE user_id = ?
             """, (modal_interaction.user.id,))
 
             user_data = cursor.fetchone()
@@ -5906,53 +7197,136 @@ async def create_quest(interaction: discord.Interaction):
                     "❌ You must register your X account first.",
                     ephemeral=True
                 )
-
                 return
 
             registered_username = user_data[0]
             current_points = user_data[1]
+            last_quest_created = user_data[2]
+
+            guild = modal_interaction.guild
+
+            team_role = guild.get_role(TEAM_ROLE_ID)
+            admin_role = guild.get_role(ADMIN_ROLE_ID)
+
+            is_team = (
+                team_role is not None
+                and team_role in modal_interaction.user.roles
+            )
+
+            is_admin = (
+                admin_role is not None
+                and admin_role in modal_interaction.user.roles
+            )
+
+            has_cooldown_exemption = is_team or is_admin
+
+            # =========================
+            # CHECK UNRESOLVED REPORTS
+            # REGULAR MEMBERS ONLY
+            # =========================
+
+            if not has_cooldown_exemption:
+
+                open_quest_id = get_open_community_quest_report(
+                    modal_interaction.user.id
+                )
+
+                if open_quest_id:
+
+                    await modal_interaction.response.send_message(
+                        f"⚠️ You cannot create another Community Quest yet.\n\n"
+                        f"Your previous Quest **#{open_quest_id}** has been "
+                        f"completed, but you haven't submitted its report "
+                        f"or confirmed that everyone completed the task.\n\n"
+                        f"Please return to its completion thread and choose "
+                        f"**Submit Report** or **Everyone Completed**.",
+                        ephemeral=True
+                    )
+
+                    return
+
+            # =========================
+            # 1-HOUR COOLDOWN
+            # =========================
+
+            if not has_cooldown_exemption and last_quest_created:
+
+                last_created = datetime.fromisoformat(last_quest_created)
+
+                elapsed = (
+                    datetime.now(UTC) - last_created
+                ).total_seconds()
+
+                remaining = 3600 - elapsed
+
+                if remaining > 0:
+
+                    minutes = int(remaining // 60)
+                    seconds = int(remaining % 60)
+
+                    await modal_interaction.response.send_message(
+                        f"⏳ You must wait **{minutes}m {seconds}s** "
+                        f"before creating another Community Quest.",
+                        ephemeral=True
+                    )
+
+                    return
+
+            reward_multiplier = 5 if is_team else 1
 
             # =========================
             # CHECK POINTS
             # =========================
 
             try:
-                budget = int(str(self.point_budget))
-            except:
+                budget = int(str(self.point_budget).strip())
+
+            except (ValueError, TypeError):
+
                 await modal_interaction.response.send_message(
-                    "❌ Invalid point amount.",
+                    "❌ Please enter a valid whole-number budget.",
                     ephemeral=True
                 )
+
                 return
 
-            budget = int(str(self.point_budget))
+            # TEAM / ADMIN
 
-            allowed_budgets = [
-                20, 30, 40, 50, 60,
-                70, 80, 90, 100
-            ]
+            if is_team or is_admin:
 
-            if budget not in allowed_budgets:
-                await modal_interaction.response.send_message(
-                    "❌ Budget must be 20,30,40,50,60,70,80,90 or 100.",
-                    ephemeral=True
-                )
-                return
+                if budget < 1 or budget > 999:
 
-            if budget <= 0:
-                await modal_interaction.response.send_message(
-                    "❌ Minimum Creator Point budget is :gem: 10.",
-                    ephemeral=True
-                )
-                return
+                    await modal_interaction.response.send_message(
+                        "❌ Team/Admin budget must be between 1 and 999.",
+                        ephemeral=True
+                    )
+
+                    return
+
+            # REGULAR MEMBERS
+
+            else:
+
+                if budget < 20 or budget > 50:
+
+                    await modal_interaction.response.send_message(
+                        "❌ Your budget must be between 20 and 50 Creator Points.",
+                        ephemeral=True
+                    )
+
+                    return
+
+            # CHECK AVAILABLE POINTS
 
             if current_points < budget:
+
                 await modal_interaction.response.send_message(
                     f"❌ Insufficient Creator Points.\n\n"
                     f"💎 Current: {current_points}\n"
                     f"💎 Required: {budget}",
                     ephemeral=True
                 )
+
                 return
 
             # =========================
@@ -5968,12 +7342,6 @@ async def create_quest(interaction: discord.Interaction):
                 f"{registered_username.lower()}/status"
             )
 
-            admin_role = interaction.guild.get_role(
-                ADMIN_ROLE_ID
-            )
-
-            is_admin = admin_role in modal_interaction.user.roles
-
             # =========================
             # NORMAL USERS
             # MUST USE THEIR OWN X
@@ -5982,6 +7350,7 @@ async def create_quest(interaction: discord.Interaction):
             if not is_admin:
 
                 if not submitted_link.startswith(expected):
+
                     await modal_interaction.response.send_message(
                         f"❌ You must use your own X post.\n\n"
                         f"Expected:\n{expected}",
@@ -5996,65 +7365,153 @@ async def create_quest(interaction: discord.Interaction):
 
             class ConfirmQuestView(ui.View):
 
-                def __init__(self, quest_title, submitted_link, budget, modal_interaction):
+                def __init__(
+                    self,
+                    quest_title,
+                    submitted_link,
+                    budget,
+                    modal_interaction,
+                    reward_multiplier,
+                    has_cooldown_exemption
+                ):
+
                     super().__init__(timeout=180)
 
                     self.quest_title = quest_title
                     self.submitted_link = submitted_link
                     self.budget = budget
                     self.modal_interaction = modal_interaction
-                    self.confirm.label = f"Run Quest (:gem: -{budget} Creator Points)"
+
+                    self.confirm.label = (
+                        f"Run Quest (:gem: -{budget} Creator Points)"
+                    )
+
+                    self.reward_multiplier = reward_multiplier
+                    self.has_cooldown_exemption = has_cooldown_exemption
 
                 @ui.button(
                     label="Run Quest",
                     style=discord.ButtonStyle.green
                 )
                 async def confirm(
-                        self,
-                        confirm_interaction: discord.Interaction,
-                        button: ui.Button
+                    self,
+                    confirm_interaction: discord.Interaction,
+                    button: ui.Button
                 ):
+
+                    # =========================
+                    # RECHECK REPORT STATUS
+                    # REGULAR MEMBERS ONLY
+                    # =========================
+
+                    if not self.has_cooldown_exemption:
+
+                        open_quest_id = get_open_community_quest_report(
+                            self.modal_interaction.user.id
+                        )
+
+                        if open_quest_id:
+
+                            await confirm_interaction.response.send_message(
+                                f"⚠️ Quest creation blocked.\n\n"
+                                f"Your previous Quest **#{open_quest_id}** "
+                                f"still needs a reporting decision.\n\n"
+                                f"Please submit its report or select "
+                                f"**Everyone Completed** in its completion thread.",
+                                ephemeral=True
+                            )
+
+                            return
+
+                    # =========================
+                    # RECHECK COOLDOWN
+                    # =========================
+
+                    if not self.has_cooldown_exemption:
+
+                        cursor.execute("""
+                            SELECT last_community_quest_at
+                            FROM users
+                            WHERE user_id = ?
+                        """, (self.modal_interaction.user.id,))
+
+                        cooldown_data = cursor.fetchone()
+
+                        if cooldown_data and cooldown_data[0]:
+
+                            last_created = datetime.fromisoformat(
+                                cooldown_data[0]
+                            )
+
+                            elapsed = (
+                                datetime.now(UTC) - last_created
+                            ).total_seconds()
+
+                            remaining = 3600 - elapsed
+
+                            if remaining > 0:
+
+                                minutes = int(remaining // 60)
+                                seconds = int(remaining % 60)
+
+                                await confirm_interaction.response.send_message(
+                                    f"⏳ You must wait **{minutes}m {seconds}s** "
+                                    f"before creating another Community Quest.",
+                                    ephemeral=True
+                                )
+
+                                return
+
+                    await confirm_interaction.response.defer(
+                        ephemeral=True
+                    )
+
                     # =========================
                     # REMOVE POINTS
                     # ADD CREATED QUEST COUNT
                     # =========================
 
-                    await confirm_interaction.response.defer(ephemeral=True)
-
                     velorax_reward = self.budget // 2
 
+                    created_at = datetime.now(UTC)
+
                     cursor.execute("""
-                    UPDATE users
-                    SET
-                        points = COALESCE(points,0) - ?,
-                        quests_created = COALESCE(quests_created,0) + 1,
-                        velorax = COALESCE(velorax,0) + ?,
-                        hosted_points = COALESCE(hosted_points,0) + ?
-                    WHERE user_id = ?
+                        UPDATE users
+                        SET
+                            points = COALESCE(points,0) - ?,
+                            quests_created = COALESCE(quests_created,0) + 1,
+                            velorax = COALESCE(velorax,0) + ?,
+                            hosted_points = COALESCE(hosted_points,0) + ?,
+                            last_community_quest_at = CASE
+                                WHEN ? = 1 THEN ?
+                                ELSE last_community_quest_at
+                            END
+                        WHERE user_id = ?
                     """, (
                         self.budget,
                         velorax_reward,
                         self.budget,
+                        int(not self.has_cooldown_exemption),
+                        created_at.isoformat(),
                         self.modal_interaction.user.id
                     ))
-
-                    created_at = datetime.now(UTC)
 
                     # =========================
                     # INSERT QUEST
                     # =========================
 
                     cursor.execute("""
-                    INSERT INTO quests (
-                        title,
-                        tweet_link,
-                        created_by,
-                        created_at,
-                        max_claims,
-                        current_claims,
-                        completed
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO quests (
+                            title,
+                            tweet_link,
+                            created_by,
+                            created_at,
+                            max_claims,
+                            current_claims,
+                            completed,
+                            reward_multiplier
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         self.quest_title,
                         self.submitted_link,
@@ -6062,8 +7519,11 @@ async def create_quest(interaction: discord.Interaction):
                         created_at.isoformat(),
                         self.budget,
                         0,
-                        0
+                        0,
+                        self.reward_multiplier
                     ))
+
+                    quest_id = cursor.lastrowid
 
                     conn.commit()
 
@@ -6072,16 +7532,14 @@ async def create_quest(interaction: discord.Interaction):
                     # =========================
 
                     cursor.execute("""
-                    SELECT points
-                    FROM users
-                    WHERE user_id = ?
+                        SELECT points
+                        FROM users
+                        WHERE user_id = ?
                     """, (self.modal_interaction.user.id,))
 
                     result = cursor.fetchone()
 
                     total_points = result[0] if result else 0
-
-                    quest_id = cursor.lastrowid
 
                     # =========================
                     # EMBED
@@ -6103,7 +7561,11 @@ async def create_quest(interaction: discord.Interaction):
 
                     embed.add_field(
                         name="Reward",
-                        value=":gem: +1 Creator Point Per Claim",
+                        value=(
+                            f"💎 +{self.reward_multiplier} Creator Point"
+                            f"{'s' if self.reward_multiplier != 1 else ''} Per Claim\n"
+                            f"💰 +{self.reward_multiplier} Velorax Per Claim"
+                        ),
                         inline=False
                     )
 
@@ -6167,11 +7629,11 @@ async def create_quest(interaction: discord.Interaction):
                     # =========================
 
                     cursor.execute("""
-                    UPDATE quests
-                    SET 
-                        message_id = ?,
-                        ping_message_id =?
-                    WHERE quest_id = ?
+                        UPDATE quests
+                        SET
+                            message_id = ?,
+                            ping_message_id = ?
+                        WHERE quest_id = ?
                     """, (
                         msg.id,
                         ping_message.id,
@@ -6187,6 +7649,7 @@ async def create_quest(interaction: discord.Interaction):
                     log_channel = guild.get_channel(LOGS_CHANNEL)
 
                     if log_channel:
+
                         await log_channel.send(
                             f"**Creator Quest Created**\n\n"
                             f"**Creator:** {self.modal_interaction.user.mention}\n"
@@ -6203,7 +7666,7 @@ async def create_quest(interaction: discord.Interaction):
                     await confirm_interaction.edit_original_response(
                         content=(
                             "✅ Quest created successfully.\n"
-                            "20 Creator Points deducted."
+                            f"{self.budget} Creator Points deducted."
                         ),
                         embed=None,
                         view=None
@@ -6221,7 +7684,9 @@ async def create_quest(interaction: discord.Interaction):
                     str(self.quest_title),
                     submitted_link,
                     budget,
-                    modal_interaction
+                    modal_interaction,
+                    reward_multiplier,
+                    has_cooldown_exemption
                 ),
                 ephemeral=True
             )
@@ -6660,7 +8125,7 @@ async def follow_quest(
 
             self.point_budget = ui.TextInput(
                 label="Creator Points To Spend",
-                placeholder="20,30,40,50,60,70,80,90,100",
+                placeholder="Enter an allowed budget",
                 required=True,
                 max_length=3
             )
@@ -7648,55 +9113,6 @@ class PayoutConfirmView(ui.View):
         )
 
 
-class ReportModal(ui.Modal, title="Submit Report"):
-
-    def __init__(self, reported_user: discord.Member):
-        super().__init__()
-        self.reported_user = reported_user
-
-    tweet_link = ui.TextInput(
-        label="Put Your Tweet Link",
-        required=True
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🚨 New Report",
-            color=0xff0000
-        )
-
-        embed.add_field(
-            name="Tweet Link",
-            value=self.tweet_link.value,
-            inline=False
-        )
-
-        embed.add_field(
-            name="Reported User",
-            value=self.reported_user.mention,
-            inline=False
-        )
-
-        embed.add_field(
-            name="Reporter",
-            value=interaction.user.mention,
-            inline=False
-        )
-
-        # =========================
-        # SEND TO ADMIN CHANNEL
-        # =========================
-
-        await interaction.response.send_message(
-            embed=embed,
-            view=ReportPublishView(
-                creator_id=interaction.user.id,
-                tweet=self.tweet_link.value,
-                reported=str(self.reported_user.id)
-            ),
-            ephemeral=True
-        )
-
 @bot.tree.command(name="available_tasks")
 @app_commands.describe(
     amount="How many active quests to show"
@@ -7820,741 +9236,891 @@ async def available_tasks(
         ephemeral=True
     )
 
-@bot.tree.command(name="report")
-async def report(interaction: discord.Interaction, user: discord.Member):
-    if interaction.channel.id != REPORT_CHANNEL:
-        return await interaction.response.send_message(
-            "❌ Use this only in the report channel",
-            ephemeral=True
-        )
-
-    await interaction.response.send_modal(
-        ReportModal(user)  # ✅ PASS USER HERE
-    )
-
-
-class ReportPublishView(ui.View):
-
-    def __init__(self, creator_id, tweet, reported):
-        super().__init__(timeout=None)
-        self.creator_id = creator_id
-        self.tweet = tweet
-        self.reported = reported
-
-    @ui.button(label="📤 Publish", style=discord.ButtonStyle.green)
-    async def publish(self, interaction: discord.Interaction, button: ui.Button):
-
-        guild = interaction.guild
-
-        report_channel = guild.get_channel(REPORT_CHANNEL)
-
-        embed = discord.Embed(
-            title="🚨 REPORT SUBMITTED",
-            color=0xff0000
-        )
-
-        embed.add_field(name="Tweet Link", value=self.tweet, inline=False)
-        embed.add_field(
-            name="Reported User",
-            value=f"<@{self.reported}>",
-            inline=False
-        )
-        embed.add_field(name="Submitted By", value=f"<@{self.creator_id}>", inline=False)
-        embed.add_field(name="Status", value="Pending Admin Review", inline=False)
-        member = interaction.guild.get_member(self.reported)
-
-        if member:
-            embed.set_thumbnail(
-                url=member.display_avatar.url
-            )
-
-        msg = await report_channel.send(embed=embed)
-
-        # send to admin review channel
-        admin_channel = interaction.guild.get_channel(
-            ADMIN_REVIEW_CHANNEL_ID
-        )
-
-        # =========================
-        # PERSISTENT DATA
-        # =========================
-
-        embed.add_field(
-            name="Reported ID",
-            value=str(self.reported),
-            inline=False
-        )
-
-        embed.add_field(
-            name="Reporter ID",
-            value=str(self.creator_id),
-            inline=False
-        )
-
-        embed.add_field(
-            name="Report Message ID",
-            value=str(msg.id),
-            inline=False
-        )
-
-        if admin_channel:
-            await admin_channel.send(
-                embed=embed,
-                view=ReportReviewView()
-            )
-
-        await interaction.response.edit_message(
-            content="✅ Report published.",
-            embed=None,
-            view=None
-        )
-
-    @ui.button(label="✏️ Edit", style=discord.ButtonStyle.gray)
-    async def edit(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message(
-            "Editing not implemented yet (we can add it next).",
-            ephemeral=True
-        )
-
-
 class ReportReviewView(ui.View):
 
     def __init__(self):
         super().__init__(timeout=None)
+
+    # ==========================================
+    # READ REPORT INFORMATION
+    # ==========================================
+
+    def get_report_data(self, message):
+
+        if not message.embeds:
+            return None
+
+        embed = message.embeds[0]
+
+        data = {
+            "reported_user": None,
+            "reporter_id": None,
+            "quest_id": None,
+            "thread_id": None,
+            "raid_link": None
+        }
+
+        for field in embed.fields:
+
+            if field.name == "Reported ID":
+                data["reported_user"] = int(field.value)
+
+            elif field.name == "Reporter ID":
+                data["reporter_id"] = int(field.value)
+
+            elif field.name == "Quest ID":
+                data["quest_id"] = int(field.value)
+
+            elif field.name == "Thread ID":
+                data["thread_id"] = int(field.value)
+
+            elif field.name == "Raid Link":
+                data["raid_link"] = field.value
+
+        if not all([
+            data["reported_user"],
+            data["reporter_id"],
+            data["quest_id"],
+            data["thread_id"]
+        ]):
+            return None
+
+        return data
+
+    # ==========================================
+    # GET COMPLETION THREAD
+    # ==========================================
+
+    async def get_report_thread(self, guild, thread_id):
+
+        thread = guild.get_thread(thread_id)
+
+        if thread:
+            return thread
+
+        try:
+            thread = await bot.fetch_channel(thread_id)
+            return thread
+
+        except (discord.NotFound, discord.Forbidden):
+            return None
+
+    # ==========================================
+    # PREVENT DUPLICATE ADMIN REVIEWS
+    # ==========================================
+
+    def claim_report(self, interaction, data):
+
+        cursor.execute("""
+            UPDATE community_quest_reports
+            SET
+                status = 'reviewing',
+                reviewed_by = ?,
+                review_result = 'started'
+            WHERE quest_id = ?
+            AND reported_user_id = ?
+            AND admin_message_id = ?
+            AND status = 'pending'
+        """, (
+            interaction.user.id,
+            data["quest_id"],
+            data["reported_user"],
+            interaction.message.id
+        ))
+
+        conn.commit()
+
+        return cursor.rowcount == 1
+
+    # ==========================================
+    # FINISH ADMIN REVIEW
+    # ==========================================
+
+    def finish_report(self, data, status):
+
+        cursor.execute("""
+            UPDATE community_quest_reports
+            SET
+                status = ?,
+                review_result = 'completed',
+                reviewed_at = ?
+            WHERE quest_id = ?
+            AND reported_user_id = ?
+            AND status = 'reviewing'
+        """, (
+            status,
+            datetime.now(UTC).isoformat(),
+            data["quest_id"],
+            data["reported_user"]
+        ))
+
+        conn.commit()
+
+    # ==========================================
+    # HANDLE ADMIN REVIEW ERRORS
+    # ==========================================
+
+    async def on_error(self, interaction, error, item):
+
+        print(f"❌ Report review error: {error!r}")
+
+        data = None
+
+        if interaction.message:
+            data = self.get_report_data(interaction.message)
+
+        if data:
+            cursor.execute("""
+                UPDATE community_quest_reports
+                SET review_result = 'needs_manual_review'
+                WHERE quest_id = ?
+                AND reported_user_id = ?
+                AND status = 'reviewing'
+            """, (
+                data["quest_id"],
+                data["reported_user"]
+            ))
+
+            conn.commit()
+
+        try:
+            await interaction.followup.send(
+                "❌ An error occurred while processing this report. "
+                "It has been flagged for manual staff review. "
+                "Please do not attempt to process it again.",
+                ephemeral=True
+            )
+
+        except discord.HTTPException:
+            print("❌ Could not send the report error notification.")
+            
+    # ==========================================
+    # RAID LINK
+    # ==========================================
 
     @ui.button(
         label="📎 Raid Link",
         style=discord.ButtonStyle.secondary,
         custom_id="report_raid_link"
     )
-    async def raid(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_message("Raid link action placeholder", ephemeral=True)
+    async def raid(
+        self,
+        interaction: discord.Interaction,
+        button: ui.Button
+    ):
 
-        embed = interaction.message.embeds[0]
+        data = self.get_report_data(interaction.message)
 
-        reported_user = None
-        reporter_id = None
-        report_msg_id = None
-        raid_link = None
+        if not data or not data["raid_link"]:
+            return await interaction.response.send_message(
+                "❌ Raid link not found.",
+                ephemeral=True
+            )
 
-        for field in embed.fields:
+        await interaction.response.send_message(
+            f"📎 **Quest Raid Link:**\n{data['raid_link']}",
+            ephemeral=True
+        )
 
-            if field.name == "Reported ID":
-                reported_user = int(field.value)
-
-            elif field.name == "Reporter ID":
-                reporter_id = int(field.value)
-
-            elif field.name == "Report Message ID":
-                report_msg_id = int(field.value)
-
-            elif field.name == "Raid Link":
-                raid_link = field.value
+    # ==========================================
+    # LET GO
+    # ==========================================
 
     @ui.button(
         label="❌ Let Go",
         style=discord.ButtonStyle.success,
         custom_id="report_let_go"
     )
-    async def let_go(self, interaction: discord.Interaction, button: ui.Button):
+    async def let_go(
+        self,
+        interaction: discord.Interaction,
+        button: ui.Button
+    ):
 
         await interaction.response.defer(ephemeral=True)
 
-        embed = interaction.message.embeds[0]
+        data = self.get_report_data(interaction.message)
 
-        reported_user = None
-        reporter_id = None
-        report_msg_id = None
-        raid_link = None
+        if not data:
+            return await interaction.followup.send(
+                "❌ Report information is incomplete.",
+                ephemeral=True
+            )
 
-        for field in embed.fields:
-
-            if field.name == "Reported ID":
-                reported_user = int(field.value)
-
-            elif field.name == "Reporter ID":
-                reporter_id = int(field.value)
-
-            elif field.name == "Report Message ID":
-                report_msg_id = int(field.value)
-
-            elif field.name == "Raid Link":
-                raid_link = field.value
+        if data["reporter_id"] == data["reported_user"]:
+            return await interaction.followup.send(
+                "❌ Invalid report. A user cannot report themselves.",
+                ephemeral=True
+            )
+        
+        if not self.claim_report(interaction, data):
+            return await interaction.followup.send(
+                "⚠️ This report has already been reviewed or is being reviewed.",
+                ephemeral=True
+            )
 
         guild = interaction.guild
 
-        member = guild.get_member(reported_user)
+        reported_user_id = data["reported_user"]
+        reporter_id = data["reporter_id"]
+
+        member = guild.get_member(reported_user_id)
         reporter = guild.get_member(reporter_id)
 
-        report_channel = guild.get_channel(REPORT_CHANNEL)
+        reporter_mention = (
+            reporter.mention
+            if reporter
+            else f"<@{reporter_id}>"
+        )
 
-        # delete admin review message
+        member_mention = (
+            member.mention
+            if member
+            else f"<@{reported_user_id}>"
+        )
+
+        thread = await self.get_report_thread(
+            guild,
+            data["thread_id"]
+        )
+
+        # ======================================
+        # DEDUCT REPORT CREATOR REWARD
+        # ======================================
+
+        cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points, 0) - 1,
+                velorax = COALESCE(velorax, 0) - 1
+            WHERE user_id = ?
+        """, (reporter_id,))
+
+        conn.commit()
+
+        cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+        """, (reporter_id,))
+
+        reporter_stats = cursor.fetchone()
+
+        reporter_points = reporter_stats[0] if reporter_stats else 0
+        reporter_velorax = reporter_stats[1] if reporter_stats else 0
+
+        # ======================================
+        # REVIEW RESULT EMBED
+        # ======================================
+
+        result_embed = discord.Embed(
+            title="✅ REPORT REVIEWED — CLEARED",
+            description=(
+                f"{member_mention} was reviewed by the staff team.\n\n"
+                f"Staff determined that the quest requirements were "
+                f"completed properly. No offense was issued."
+            ),
+            color=0x00ff99
+        )
+
+        result_embed.add_field(
+            name="👤 Reported User",
+            value=member_mention,
+            inline=True
+        )
+
+        result_embed.add_field(
+            name="📝 Report Creator",
+            value=reporter_mention,
+            inline=True
+        )
+
+        result_embed.add_field(
+            name="🛡 Reviewed By",
+            value=interaction.user.mention,
+            inline=True
+        )
+
+        result_embed.add_field(
+            name="📌 Result",
+            value="Cleared — No Violation Found",
+            inline=False
+        )
+
+        result_embed.add_field(
+            name="📉 Report Creator Deduction",
+            value="-1 Creator Point\n-1 Velorax",
+            inline=False
+        )
+
+        result_embed.add_field(
+            name="💰 Report Creator Totals",
+            value=(
+                f"Creator Points: {reporter_points}\n"
+                f"Velorax: {reporter_velorax}"
+            ),
+            inline=False
+        )
+
+        if member:
+            result_embed.set_thumbnail(
+                url=member.display_avatar.url
+            )
+
+        # ======================================
+        # POST RESULT IN COMPLETION THREAD
+        # ======================================
+
+        if thread:
+            await thread.send(embed=result_embed)
+
+        # ======================================
+        # LOGS CHANNEL
+        # ======================================
+
+        logs_channel = guild.get_channel(LOGS_CHANNEL)
+
+        if logs_channel:
+            await logs_channel.send(
+                f"✅ REPORT CLEARED\n\n"
+                f"👤 Reported User: {member_mention}\n"
+                f"📝 Report Creator: {reporter_mention}\n"
+                f"👮 Reviewed By: {interaction.user.mention}\n\n"
+                f"📌 Result: No Violation Found\n\n"
+                f"Report Creator Deduction:\n"
+                f"• -1 Creator Point\n"
+                f"• -1 Velorax"
+            )
+
+        self.finish_report(data, "cleared")
+
         await interaction.message.delete()
 
-        if report_channel:
-
-            try:
-                original = await report_channel.fetch_message(
-                    report_msg_id
-                )
-
-                embed = discord.Embed(
-                    title="✅ Report Reviewed",
-                    description=(
-                        f"{member.mention} was reviewed and cleared.\n\n"
-                        f"Staff determined the quest requirements were completed properly."
-                    ),
-                    color=0x00ff99
-                )
-
-                embed.add_field(
-                    name="👤 Reported User",
-                    value=member.mention,
-                    inline=True
-                )
-
-                embed.add_field(
-                    name="📝 Reporter",
-                    value=(
-                        reporter.mention
-                        if reporter
-                        else f"<@{reporter_id}>"
-                    ),
-                    inline=True
-                )
-
-                embed.add_field(
-                    name="🛡 Reviewed By",
-                    value=interaction.user.mention,
-                    inline=True
-                )
-
-                embed.add_field(
-                    name="📌 Result",
-                    value="Cleared — No Violation Found",
-                    inline=False
-                )
-
-                embed.set_thumbnail(
-                    url=member.display_avatar.url
-                )
-
-                await original.reply(
-                    embed=embed
-                )
-
-            except:
-                pass
-
         await interaction.followup.send(
-            "Report cleared.",
+            "✅ Report cleared. The result has been posted in the quest thread.",
             ephemeral=True
         )
+
+    # ==========================================
+    # PENALIZE
+    # ==========================================
 
     @ui.button(
         label="⚠️ Penalize",
         style=discord.ButtonStyle.danger,
         custom_id="report_penalize"
     )
-    async def penalize(self, interaction: discord.Interaction, button: ui.Button):
+    async def penalize(
+        self,
+        interaction: discord.Interaction,
+        button: ui.Button
+    ):
 
         await interaction.response.defer(ephemeral=True)
-        embed = interaction.message.embeds[0]
 
-        reported_user = None
-        reporter_id = None
-        report_msg_id = None
-        raid_link = None
+        data = self.get_report_data(interaction.message)
 
-        for field in embed.fields:
+        if not data:
+            return await interaction.followup.send(
+                "❌ Report information is incomplete.",
+                ephemeral=True
+            )
 
-            if field.name == "Reported ID":
-                reported_user = int(field.value)
-
-            elif field.name == "Reporter ID":
-                reporter_id = int(field.value)
-
-            elif field.name == "Report Message ID":
-                report_msg_id = int(field.value)
-
-            elif field.name == "Raid Link":
-                raid_link = field.value
+        if not self.claim_report(interaction, data):
+            return await interaction.followup.send(
+                "⚠️ This report has already been reviewed or is being reviewed.",
+                ephemeral=True
+            )
 
         guild = interaction.guild
 
-        member = guild.get_member(reported_user)
+        reported_user_id = data["reported_user"]
+        reporter_id = data["reporter_id"]
 
-        logs_channel = guild.get_channel(LOGS_CHANNEL)
+        # ======================================
+        # PREVENT SELF-REPORTING
+        # ======================================
 
-        if not member:
-            return await interaction.response.send_message(
-                "User not found.",
+        if reporter_id == reported_user_id:
+
+            cursor.execute("""
+                UPDATE community_quest_reports
+                SET status = 'pending', reviewed_by = NULL, review_result = NULL
+                WHERE quest_id = ?
+                AND reported_user_id = ?
+            """, (
+                data["quest_id"],
+                reported_user_id
+            ))
+
+            conn.commit()
+
+            return await interaction.followup.send(
+                "❌ Invalid report. A user cannot report themselves.",
                 ephemeral=True
             )
+
+        member = guild.get_member(reported_user_id)
+
+        if not member:
+            try:
+                member = await guild.fetch_member(reported_user_id)
+
+            except discord.NotFound:
+
+                cursor.execute("""
+                    UPDATE community_quest_reports
+                    SET status = 'pending', reviewed_by = NULL, review_result = NULL
+                    WHERE quest_id = ?
+                    AND reported_user_id = ?
+                """, (
+                    data["quest_id"],
+                    reported_user_id
+                ))
+
+                conn.commit()
+
+                return await interaction.followup.send(
+                    "❌ Reported member is no longer in the server. "
+                    "The report remains pending.",
+                    ephemeral=True
+                )
+
+        reporter = guild.get_member(reporter_id)
+
+        reporter_mention = (
+            reporter.mention
+            if reporter
+            else f"<@{reporter_id}>"
+        )
+
+        member_mention = member.mention
+
+        admin = interaction.user
+
+        logs_channel = guild.get_channel(LOGS_CHANNEL)
+        report_channel = guild.get_channel(REPORT_CHANNEL)
 
         first_role = guild.get_role(FIRST_OFFENSE_ROLE)
         second_role = guild.get_role(SECOND_OFFENSE_ROLE)
 
-        report_channel = guild.get_channel(REPORT_CHANNEL)
+        leaderboard_suspended_role = guild.get_role(
+            1507613855587766302
+        )
 
-        admin = interaction.user
-        reporter = guild.get_member(reporter_id)
+        super_elite_role = guild.get_role(
+            1572124021691261008
+        )
 
-        # =========================
-        # OFFENSE SYSTEM
-        # =========================
+        elite_role = guild.get_role(
+            1514517405735452843
+        )
 
-        if reporter_id == member.id:
-            return await interaction.response.send_message(
-                "Invalid report.",
+        if not first_role or not second_role or not leaderboard_suspended_role:
+
+            cursor.execute("""
+                UPDATE community_quest_reports
+                SET status = 'pending', reviewed_by = NULL, review_result = NULL
+                WHERE quest_id = ?
+                AND reported_user_id = ?
+            """, (
+                data["quest_id"],
+                reported_user_id
+            ))
+
+            conn.commit()
+
+            return await interaction.followup.send(
+                "❌ One or more required offense roles could not be found. "
+                "No penalty was applied.",
                 ephemeral=True
             )
 
-        if first_role not in member.roles:
+        # ======================================
+        # INITIALIZE RESULT VALUES
+        # ======================================
+
+        status = None
+        points_deducted = 0
+        velorax_deducted = 0
+        reporter_reward = 0
+        reporter_velorax_reward = 1
+        expires = None
+        recovery_progress = None
+
+        now = datetime.now(UTC)
+
+        # ======================================
+        # FIRST OFFENSE
+        # ======================================
+
+        if (
+                leaderboard_suspended_role not in member.roles
+                and first_role not in member.roles
+                and second_role not in member.roles
+        ):
 
             await member.add_roles(first_role)
 
             cursor.execute("""
-            DELETE FROM offense_timers
-            WHERE user_id = ?
-            """, (
-                member.id,
-            ))
+                DELETE FROM offense_timers
+                WHERE user_id = ?
+            """, (member.id,))
+
+            expires = now + timedelta(days=7)
 
             cursor.execute("""
-            INSERT INTO offense_timers (
-                user_id,
-                offense_type,
-                expires_at
-            )
-            VALUES (?, ?, ?)
+                INSERT INTO offense_timers (
+                    user_id,
+                    offense_type,
+                    expires_at
+                )
+                VALUES (?, ?, ?)
             """, (
                 member.id,
                 "first",
-                (
-                        datetime.now(UTC) +
-                        timedelta(days=7)
-                ).isoformat()
+                expires.isoformat()
             ))
 
-            conn.commit()
-
-            expires = datetime.now(UTC) + timedelta(days=7)
-
-            if logs_channel:
-                await logs_channel.send(
-                    f"⏳ OFFENSE TIMER STARTED\n\n"
-                    f"👤 User: {member.mention}\n"
-                    f"⚠️ Type: First Offense\n"
-                    f"📅 Expires: <t:{int(expires.timestamp())}:F>\n"
-                    f"🗑 Role will automatically be removed if no further penalties occur."
-                )
-
-            # =========================
-            # DEDUCT 2 POINTS
-            # =========================
-
-            cursor.execute("""
-            UPDATE users
-            SET
-                points = COALESCE(points,0) - 2,
-                velorax = COALESCE(velorax,0) - 1
-            WHERE user_id = ?
-            """, (member.id,))
-
-            cursor.execute("""
-            UPDATE users
-            SET
-                points = COALESCE(points,0) + 2,
-                velorax = COALESCE(velorax,0) + 1
-            WHERE user_id = ?
-            """, (reporter_id,))
-
+            points_deducted = 2
+            velorax_deducted = 5
             reporter_reward = 2
 
-            cursor.execute("""
-            SELECT points, velorax
-            FROM users
-            WHERE user_id = ?
-            """, (member.id,))
-            reported_stats = cursor.fetchone()
-
-            reported_points = reported_stats[0] if reported_stats else 0
-            reported_velorax = reported_stats[1] if reported_stats else 0
-
-            cursor.execute("""
-            SELECT points, velorax
-            FROM users
-            WHERE user_id = ?
-            """, (reporter_id,))
-            reporter_stats = cursor.fetchone()
-
-            reporter_points = reporter_stats[0] if reporter_stats else 0
-            reporter_velorax = reporter_stats[1] if reporter_stats else 0
-
-            conn.commit()
-
-            # =========================
-            # LOG PENALTY
-            # =========================
-
-            logs_channel = guild.get_channel(LOGS_CHANNEL)
+            status = "First Offense"
 
             if logs_channel:
-                cursor.execute("""
-                SELECT points
-                FROM users
-                WHERE user_id = ?
-                """, (member.id,))
-
-                updated_points = cursor.fetchone()
-
-                total_points = (
-                    updated_points[0]
-                    if updated_points
-                    else 0
-                )
-
                 await logs_channel.send(
-                    f"⚠️ REPORT PENALIZED\n\n"
-
-                    f"👤 Reported User: {member.mention}\n"
-                    f"📝 Reporter: {reporter.mention if reporter else f'<@{reporter_id}>'}\n"
-                    f"👮 Reviewed By: {admin.mention}\n\n"
-
-                    f"{member.mention} Lost:\n"
-                    f"• -2 Creator Points\n"
-                    f"• -1 Velorax\n\n"
-
-                    f"{reporter.mention} Earned:\n"
-                    f"• +2 Creator Points\n"
-                    f"• +1 Velorax\n\n"
-
-                    f"{member.mention} Totals:\n"
-                    f"• Creator Points: {reported_points}\n"
-                    f"• Velorax: {reported_velorax}\n\n"
-
-                    f"{reporter.mention} Totals:\n"
-                    f"• Creator Points: {reporter_points}\n"
-                    f"• Velorax: {reporter_velorax}"
+                    f"⏳ FIRST OFFENSE TIMER STARTED\n\n"
+                    f"👤 User: {member.mention}\n"
+                    f"📅 Expires: <t:{int(expires.timestamp())}:F>\n"
+                    f"🗑 First Offense role will be removed if no further "
+                    f"penalties occur for 7 days."
                 )
 
-            status = "First Offense"
-            remaining = 2
-            deduction = 2
+        # ======================================
+        # SECOND OFFENSE
+        # ======================================
 
-        elif second_role not in member.roles:
+        elif (
+
+                leaderboard_suspended_role not in member.roles
+
+                and second_role not in member.roles
+
+        ):
 
             await member.add_roles(second_role)
 
             cursor.execute("""
-            DELETE FROM offense_timers
-            WHERE user_id = ?
-            """, (
-                member.id,
-            ))
+                DELETE FROM offense_timers
+                WHERE user_id = ?
+            """, (member.id,))
+
+            expires = now + timedelta(days=7)
 
             cursor.execute("""
-            INSERT INTO offense_timers (
-                user_id,
-                offense_type,
-                expires_at
-            )
-            VALUES (?, ?, ?)
+                INSERT INTO offense_timers (
+                    user_id,
+                    offense_type,
+                    expires_at
+                )
+                VALUES (?, ?, ?)
             """, (
                 member.id,
                 "second",
-                (
-                        datetime.now(UTC) +
-                        timedelta(days=7)
-                ).isoformat()
+                expires.isoformat()
             ))
 
-            conn.commit()
-
-            expires = datetime.now(UTC) + timedelta(days=7)
-
-            if logs_channel:
-                await logs_channel.send(
-                    f"⏳ OFFENSE TIMER RESET\n\n"
-                    f"👤 User: {member.mention}\n"
-                    f"⚠️ Type: Second Offense\n"
-                    f"📅 Expires: <t:{int(expires.timestamp())}:F>\n\n"
-                    f"First Offense timer is paused until Second Offense expires."
-                )
-
-            # =========================
-            # DEDUCT 2 POINTS
-            # =========================
-
-            cursor.execute("""
-            UPDATE users
-            SET
-                points = COALESCE(points,0) - 5,
-                velorax = COALESCE(velorax,0) - 1
-            WHERE user_id = ?
-            """, (member.id,))
-
-            cursor.execute("""
-            UPDATE users
-            SET
-                points = COALESCE(points,0) + 5,
-                velorax = COALESCE(velorax,0) + 1
-            WHERE user_id = ?
-            """, (reporter_id,))
-
+            points_deducted = 5
+            velorax_deducted = 10
             reporter_reward = 5
 
-            cursor.execute("""
-            SELECT points, velorax
-            FROM users
-            WHERE user_id = ?
-            """, (member.id,))
-            reported_stats = cursor.fetchone()
-
-            reported_points = reported_stats[0] if reported_stats else 0
-            reported_velorax = reported_stats[1] if reported_stats else 0
-
-            cursor.execute("""
-            SELECT points, velorax
-            FROM users
-            WHERE user_id = ?
-            """, (reporter_id,))
-            reporter_stats = cursor.fetchone()
-
-            reporter_points = reporter_stats[0] if reporter_stats else 0
-            reporter_velorax = reporter_stats[1] if reporter_stats else 0
-
-            conn.commit()
-
-            # =========================
-            # LOG PENALTY
-            # =========================
-
-            logs_channel = guild.get_channel(LOGS_CHANNEL)
+            status = "Second Offense"
 
             if logs_channel:
-                cursor.execute("""
-                SELECT points
-                FROM users
-                WHERE user_id = ?
-                """, (member.id,))
-
-                updated_points = cursor.fetchone()
-
-                total_points = (
-                    updated_points[0]
-                    if updated_points
-                    else 0
-                )
-
                 await logs_channel.send(
-                    f"⚠️ REPORT PENALIZED\n\n"
-
-                    f"👤 Reported User: {member.mention}\n"
-                    f"📝 Reporter: {reporter.mention if reporter else f'<@{reporter_id}>'}\n"
-                    f"👮 Reviewed By: {admin.mention}\n\n"
-
-                    f"{member.mention} Lost:\n"
-                    f"• -5 Creator Points\n"
-                    f"• -1 Velorax\n\n"
-
-                    f"{reporter.mention} Earned:\n"
-                    f"• +5 Creator Points\n"
-                    f"• +1 Velorax\n\n"
-
-                    f"{member.mention} Totals:\n"
-                    f"• Creator Points: {reported_points}\n"
-                    f"• Velorax: {reported_velorax}\n\n"
-
-                    f"{reporter.mention} Totals:\n"
-                    f"• Creator Points: {reporter_points}\n"
-                    f"• Velorax: {reporter_velorax}"
+                    f"⏳ SECOND OFFENSE TIMER STARTED\n\n"
+                    f"👤 User: {member.mention}\n"
+                    f"📅 Expires: <t:{int(expires.timestamp())}:F>\n\n"
+                    f"First Offense timer has been reset. "
+                    f"First Offense will begin again after the Second Offense expires."
                 )
 
-            status = "Second Offense"
-            remaining = 1
-            deduction = 5
+        # ======================================
+        # THIRD OFFENSE
+        # ======================================
 
         else:
 
-            cursor.execute("""
-            UPDATE users
-            SET
-                points = COALESCE(points,0) + 10,
-                velorax = COALESCE(velorax,0) + 1
-            WHERE user_id = ?
-            """, (reporter_id,))
+            # Remove previous offense roles
+
+            roles_to_remove = []
+
+            if first_role and first_role in member.roles:
+                roles_to_remove.append(first_role)
+
+            if second_role and second_role in member.roles:
+                roles_to_remove.append(second_role)
+
+            if super_elite_role and super_elite_role in member.roles:
+                roles_to_remove.append(super_elite_role)
+
+            if elite_role and elite_role in member.roles:
+                roles_to_remove.append(elite_role)
+
+            if roles_to_remove:
+                await member.remove_roles(*roles_to_remove)
+
+            # Assign Leaderboard Suspended role if not already assigned
+
+            if leaderboard_suspended_role not in member.roles:
+                await member.add_roles(leaderboard_suspended_role)
+
+            # Remove old offense timers
 
             cursor.execute("""
-            SELECT points, velorax
-            FROM users
-            WHERE user_id = ?
-            """, (reporter_id,))
-            reporter_stats = cursor.fetchone()
 
-            reporter_points = reporter_stats[0] if reporter_stats else 0
-            reporter_velorax = reporter_stats[1] if reporter_stats else 0
+                DELETE FROM offense_timers
 
-            cursor.execute("""
-            DELETE FROM users
-            WHERE user_id = ?
+                WHERE user_id = ?
+
             """, (member.id,))
 
-            conn.commit()
+            points_deducted = 10
 
-            await member.ban(reason="3rd offense reached")
+            velorax_deducted = 20
 
             reporter_reward = 10
 
-            await logs_channel.send(
-                f"🔨 {member.mention} was permanently banned.\n\n"
-                f"👮 Reviewed By: {admin.mention}\n"
-                f"⚠️ Reason: 3rd offense reached"
+            status = "Leaderboard Suspended"
+
+            # Reset recovery progress on every approved report
+
+            cursor.execute("""
+                UPDATE users
+                SET recovery_quests = 0
+                WHERE user_id = ?
+            """, (member.id,))
+
+            recovery_progress = 0
+
+        # ======================================
+        # APPLY POINT DEDUCTIONS AND REWARDS
+        # ======================================
+
+        cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points, 0) - ?,
+                velorax = COALESCE(velorax, 0) - ?
+            WHERE user_id = ?
+        """, (
+            points_deducted,
+            velorax_deducted,
+            member.id
+        ))
+
+        cursor.execute("""
+            UPDATE users
+            SET
+                points = COALESCE(points, 0) + ?,
+                velorax = COALESCE(velorax, 0) + ?
+            WHERE user_id = ?
+        """, (
+            reporter_reward,
+            reporter_velorax_reward,
+            reporter_id
+        ))
+
+        conn.commit()
+
+        # ======================================
+        # GET UPDATED TOTALS
+        # ======================================
+
+        cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+        """, (member.id,))
+
+        reported_stats = cursor.fetchone()
+
+        reported_points = reported_stats[0] if reported_stats else 0
+        reported_velorax = reported_stats[1] if reported_stats else 0
+
+        cursor.execute("""
+            SELECT points, velorax
+            FROM users
+            WHERE user_id = ?
+        """, (reporter_id,))
+
+        reporter_stats = cursor.fetchone()
+
+        reporter_points = reporter_stats[0] if reporter_stats else 0
+        reporter_velorax = reporter_stats[1] if reporter_stats else 0
+
+        # ======================================
+        # CREATE RESULT EMBED
+        # ======================================
+
+        result_embed = discord.Embed(
+            title="⚠️ REPORT PENALIZED",
+            description=(
+                f"{member.mention} has been penalized after admin review.\n\n"
+                f"Please follow quest requirements carefully to avoid further penalties."
+            ),
+            color=0xff3333
+        )
+
+        result_embed.add_field(
+            name="👤 Reported User",
+            value=member.mention,
+            inline=True
+        )
+
+        result_embed.add_field(
+            name="📝 Report Creator",
+            value=reporter_mention,
+            inline=True
+        )
+
+        result_embed.add_field(
+            name="🛡 Reviewed By",
+            value=admin.mention,
+            inline=True
+        )
+
+        result_embed.add_field(
+            name="⚠️ Penalty",
+            value=status,
+            inline=False
+        )
+
+        result_embed.add_field(
+            name="📉 Reported User Deduction",
+            value=(
+                f"-{points_deducted} Creator Points\n"
+                f"-{velorax_deducted} Velorax"
+            ),
+            inline=False
+        )
+
+        result_embed.add_field(
+            name="🎁 Report Creator Reward",
+            value=(
+                f"+{reporter_reward} Creator Points\n"
+                f"+{reporter_velorax_reward} Velorax"
+            ),
+            inline=False
+        )
+
+        result_embed.add_field(
+            name="💰 Reported User Totals",
+            value=(
+                f"Creator Points: {reported_points}\n"
+                f"Velorax: {reported_velorax}"
+            ),
+            inline=True
+        )
+
+        result_embed.add_field(
+            name="💎 Report Creator Totals",
+            value=(
+                f"Creator Points: {reporter_points}\n"
+                f"Velorax: {reporter_velorax}"
+            ),
+            inline=True
+        )
+
+        if status == "First Offense":
+
+            result_embed.add_field(
+                name="⏳ First Offense Expires",
+                value=f"<t:{int(expires.timestamp())}:F>",
+                inline=False
             )
 
-            status = "BANNED"
-            remaining = 0
-            deduction = "Banned"
+        elif status == "Second Offense":
 
+            result_embed.add_field(
+                name="⏳ Second Offense Expires",
+                value=f"<t:{int(expires.timestamp())}:F>",
+                inline=False
+            )
 
-        # =========================
-        # DELETE ADMIN REVIEW
-        # =========================
+            result_embed.add_field(
+                name="📌 First Offense Status",
+                value="First Offense timer restarts after the Second Offense expires.",
+                inline=False
+            )
+
+        elif status == "Leaderboard Suspended":
+
+            result_embed.add_field(
+                name="⛔ Leaderboard Recovery",
+                value=(
+                    "Recovery Progress: 0/20 Community Quests\n"
+                    "The member must complete 20 successful Community Quests "
+                    "without another approved report."
+                ),
+                inline=False
+            )
+
+        result_embed.set_thumbnail(
+            url=member.display_avatar.url
+        )
+
+        # ======================================
+        # POST RESULT IN COMPLETION THREAD
+        # ======================================
+
+        thread = await self.get_report_thread(
+            guild,
+            data["thread_id"]
+        )
+
+        if thread:
+            await thread.send(embed=result_embed)
+
+        # ======================================
+        # EXISTING LOGS CHANNEL
+        # ======================================
+
+        if logs_channel:
+            await logs_channel.send(
+                f"⚠️ REPORT PENALIZED\n\n"
+                f"👤 Reported User: {member.mention}\n"
+                f"📝 Report Creator: {reporter_mention}\n"
+                f"👮 Reviewed By: {admin.mention}\n\n"
+                f"Penalty: {status}\n\n"
+                f"{member.mention} Lost:\n"
+                f"• -{points_deducted} Creator Points\n"
+                f"• -{velorax_deducted} Velorax\n\n"
+                f"{reporter_mention} Earned:\n"
+                f"• +{reporter_reward} Creator Points\n"
+                f"• +{reporter_velorax_reward} Velorax\n\n"
+                f"{member.mention} Totals:\n"
+                f"• Creator Points: {reported_points}\n"
+                f"• Velorax: {reported_velorax}\n\n"
+                f"{reporter_mention} Totals:\n"
+                f"• Creator Points: {reporter_points}\n"
+                f"• Velorax: {reporter_velorax}"
+            )
+
+        # ======================================
+        # FINISH REVIEW AND DELETE ADMIN MESSAGE
+        # ======================================
+
+        self.finish_report(data, "penalized")
 
         await interaction.message.delete()
 
-        # =========================
-        # REPLY TO ORIGINAL REPORT
-        # =========================
-
-        if report_channel:
-
-            try:
-                original = await report_channel.fetch_message(
-                    report_msg_id
-                )
-
-                embed = discord.Embed(
-                    title="🚨 Report Result",
-                    color=0xff0000
-                )
-
-                embed.description = (
-                    f"{member.mention} has been penalized after review.\n\n"
-                    f"Please follow quest requirements carefully to avoid further penalties."
-                )
-
-                embed.add_field(
-                    name="👤 Reported User",
-                    value=member.mention,
-                    inline=True
-                )
-
-                embed.add_field(
-                    name="🛡 Reviewed By",
-                    value=admin.mention,
-                    inline=True
-                )
-
-                embed.add_field(
-                    name="📝 Reporter",
-                    value=reporter.mention,
-                    inline=False
-                )
-
-                embed.add_field(
-                    name="⚠️ Penalty",
-                    value=status,
-                    inline=False
-                )
-
-                if status == "First Offense":
-                    expires = datetime.now(UTC) + timedelta(days=7)
-
-                    embed.add_field(
-                        name="⏳ Offense Expires",
-                        value=f"<t:{int(expires.timestamp())}:F>",
-                        inline=False
-                    )
-
-                elif status == "Second Offense":
-                    expires = datetime.now(UTC) + timedelta(days=7)
-
-                    embed.add_field(
-                        name="⏳ Second Offense Expires",
-                        value=f"<t:{int(expires.timestamp())}:F>",
-                        inline=False
-                    )
-
-                    embed.add_field(
-                        name="📌 First Offense Status",
-                        value="Timer paused until Second Offense expires",
-                        inline=False
-                    )
-
-                embed.add_field(
-                    name="📉 Point Deduction",
-                    value=(
-                        f"-{deduction} Creator Points"
-                        if deduction != "Banned"
-                        else "Permanent Ban"
-                    ),
-                    inline=False
-                )
-
-                embed.add_field(
-                    name="🎁 Reporter Reward",
-                    value=(
-                        f"{reporter.mention if reporter else f'<@{reporter_id}>'}\n"
-                        f"+{reporter_reward} Creator Points\n"
-                        f"+1 Velorax"
-                    ),
-                    inline=False
-                )
-
-                embed.add_field(
-                    name="💰 Reporter Totals",
-                    value=(
-                        f"{reporter.mention if reporter else f'<@{reporter_id}>'}\n"
-                        f"Creator Points: {reporter_points}\n"
-                        f"Velorax: {reporter_velorax}"
-                    ),
-                    inline=False
-                )
-
-                embed.add_field(
-                    name="💎 Reported User Totals",
-                    value=(
-                        f"{member.mention}\n"
-                        f"Creator Points: {reported_points}\n"
-                        f"Velorax: {reported_velorax}"
-                    ),
-                    inline=False
-                )
-
-                embed.add_field(
-                    name="📌 Remaining Before Ban",
-                    value=str(remaining),
-                    inline=False
-                )
-
-                embed.set_thumbnail(
-                    url=member.display_avatar.url
-                )
-
-                await original.reply(
-                    embed=embed
-                )
-
-            except:
-                pass
-
         await interaction.followup.send(
-            "Penalty applied.",
+            f"✅ {status} successfully applied. "
+            f"The result has been posted in the quest completion thread.",
             ephemeral=True
         )
-
 
 async def give_admin_creator_points():
 
@@ -10568,13 +12134,15 @@ async def leaderboard_role_sync():
     member_role = guild.get_role(MEMBER_ROLE_ID)
     admin_role = guild.get_role(ADMIN_ROLE_ID)
     team_role = guild.get_role(1501472062903156756)
+    leaderboard_suspended_role = guild.get_role(1507613855587766302)
 
     if not all([
         super_elite_role,
         elite_role,
         member_role,
         admin_role,
-        team_role
+        team_role,
+        leaderboard_suspended_role
     ]):
         print("❌ Role synchronization stopped: One or more roles were not found.")
         return
@@ -10658,6 +12226,10 @@ async def leaderboard_role_sync():
 
             # Exclude Team
             if team_role in member.roles:
+                continue
+
+            # Exclude members with leaderboard suspension
+            if leaderboard_suspended_role in member.roles:
                 continue
 
             filtered_users.append(user)
@@ -10906,7 +12478,657 @@ async def delete_x_links(message):
 
         except discord.HTTPException as e:
             print(f"❌ Failed to delete X link: {e}")
-            
+
+
+# ==========================================
+# ADD EXTRA BOOST
+# OWNER ONLY
+# ==========================================
+
+@bot.tree.command(
+    name="boost_add",
+    description="Record one additional server boost for a member."
+)
+@app_commands.describe(
+    member="The member who received an additional boost"
+)
+async def boost_add(
+    interaction: discord.Interaction,
+    member: discord.Member
+):
+
+    if interaction.user.id != BOOST_INCENTIVE_OWNER_ID:
+
+        return await interaction.response.send_message(
+            "❌ You are not authorized to use this command.",
+            ephemeral=True
+        )
+
+    conn_boost = sqlite3.connect(
+        DB_PATH,
+        timeout=30
+    )
+
+    try:
+
+        conn_boost.execute(
+            "PRAGMA busy_timeout = 30000"
+        )
+
+        now = datetime.now(UTC).isoformat()
+
+        conn_boost.execute("""
+            INSERT OR IGNORE INTO booster_extra_boosts (
+                user_id,
+                extra_boosts,
+                updated_at
+            )
+            VALUES (?, 0, ?)
+        """, (
+            member.id,
+            now
+        ))
+
+        conn_boost.execute("""
+            UPDATE booster_extra_boosts
+            SET
+                extra_boosts = extra_boosts + 1,
+                updated_at = ?
+            WHERE user_id = ?
+        """, (
+            now,
+            member.id
+        ))
+
+        result = conn_boost.execute("""
+            SELECT extra_boosts
+            FROM booster_extra_boosts
+            WHERE user_id = ?
+        """, (
+            member.id,
+        )).fetchone()
+
+        conn_boost.commit()
+
+        extra_boosts = result[0]
+        total_boosts = extra_boosts + 1
+
+        reward = 25 + (15 * (total_boosts - 1))
+
+        await interaction.response.send_message(
+            f"✅ Recorded one additional boost for {member.mention}.\n\n"
+            f"Recorded extra boosts: **{extra_boosts}**\n"
+            f"Total recorded boosts: **{total_boosts}**\n"
+            f"Weekly Creator Points reward: **{reward}**\n\n"
+            f"The member must have the official Server Booster role "
+            f"to receive the incentive.",
+            ephemeral=True
+        )
+
+    finally:
+        conn_boost.close()
+
+
+# ==========================================
+# REMOVE EXTRA BOOST
+# OWNER ONLY
+# ==========================================
+
+@bot.tree.command(
+    name="boost_remove",
+    description="Remove one manually recorded additional boost."
+)
+@app_commands.describe(
+    member="The member whose additional boost should be removed"
+)
+async def boost_remove(
+    interaction: discord.Interaction,
+    member: discord.Member
+):
+
+    if interaction.user.id != BOOST_INCENTIVE_OWNER_ID:
+
+        return await interaction.response.send_message(
+            "❌ You are not authorized to use this command.",
+            ephemeral=True
+        )
+
+    conn_boost = sqlite3.connect(
+        DB_PATH,
+        timeout=30
+    )
+
+    try:
+
+        conn_boost.execute(
+            "PRAGMA busy_timeout = 30000"
+        )
+
+        cursor_boost = conn_boost.execute("""
+            UPDATE booster_extra_boosts
+            SET
+                extra_boosts = extra_boosts - 1,
+                updated_at = ?
+            WHERE user_id = ?
+            AND extra_boosts > 0
+        """, (
+            datetime.now(UTC).isoformat(),
+            member.id
+        ))
+
+        if cursor_boost.rowcount != 1:
+
+            conn_boost.rollback()
+
+            return await interaction.response.send_message(
+                f"❌ {member.mention} has no manually recorded "
+                f"additional boosts to remove.",
+                ephemeral=True
+            )
+
+        result = conn_boost.execute("""
+            SELECT extra_boosts
+            FROM booster_extra_boosts
+            WHERE user_id = ?
+        """, (
+            member.id,
+        )).fetchone()
+
+        conn_boost.commit()
+
+        extra_boosts = result[0]
+        total_boosts = extra_boosts + 1
+
+        reward = 25 + (15 * (total_boosts - 1))
+
+        await interaction.response.send_message(
+            f"✅ Removed one additional recorded boost from "
+            f"{member.mention}.\n\n"
+            f"Recorded extra boosts: **{extra_boosts}**\n"
+            f"Total recorded boosts: **{total_boosts}**\n"
+            f"Weekly Creator Points reward: **{reward}**\n\n"
+            f"The official Server Booster role still counts as "
+            f"the first boost.",
+            ephemeral=True
+        )
+
+    finally:
+        conn_boost.close()
+        
+
+# ==========================================
+# SERVER BOOSTER WEEKLY PAYOUT
+# ==========================================
+
+async def process_booster_incentive_payout():
+
+    guild = bot.get_guild(GUILD_ID)
+
+    if guild is None:
+        raise RuntimeError(
+            "Could not find the configured VeloraX guild."
+        )
+
+    booster_role = guild.get_role(
+        SERVER_BOOSTER_ROLE_ID
+    )
+
+    team_admin_role = guild.get_role(
+        TEAM_ROLE_ID
+    )
+
+    if booster_role is None:
+        raise RuntimeError(
+            "Server Booster role was not found."
+        )
+
+    # Fail safely rather than accidentally rewarding Team/Admin.
+    if team_admin_role is None:
+        raise RuntimeError(
+            "Team/Admin role was not found. "
+            "No booster rewards were issued."
+        )
+
+    # ======================================
+    # FETCH CURRENT SERVER MEMBERS
+    # ======================================
+
+    members = []
+
+    async for member in guild.fetch_members(limit=None):
+
+        if booster_role not in member.roles:
+            continue
+
+        # Exclude Team/Admin completely.
+        if team_admin_role in member.roles:
+            continue
+
+        members.append(member)
+
+    conn_boost = sqlite3.connect(
+        DB_PATH,
+        timeout=30
+    )
+
+    try:
+
+        conn_boost.execute(
+            "PRAGMA busy_timeout = 30000"
+        )
+
+        conn_boost.execute("BEGIN IMMEDIATE")
+
+        schedule = conn_boost.execute("""
+            SELECT next_payout_at
+            FROM booster_incentive_schedule
+            WHERE id = 1
+        """).fetchone()
+
+        if not schedule:
+            raise RuntimeError(
+                "Booster incentive schedule is missing."
+            )
+
+        if time.time() < schedule[0]:
+
+            conn_boost.rollback()
+            return False
+
+        payout_time = time.time()
+
+        next_payout_time = (
+            payout_time + BOOST_INCENTIVE_INTERVAL
+        )
+
+        # ======================================
+        # GET MANUALLY RECORDED EXTRA BOOSTS
+        # ======================================
+
+        extra_boost_rows = conn_boost.execute("""
+            SELECT user_id, extra_boosts
+            FROM booster_extra_boosts
+        """).fetchall()
+
+        extra_boost_map = {
+            user_id: extra_boosts
+            for user_id, extra_boosts in extra_boost_rows
+        }
+
+        # ======================================
+        # CREATE PAYOUT ROUND
+        # ======================================
+
+        cursor_round = conn_boost.execute("""
+            INSERT INTO booster_incentive_rounds (
+                paid_at,
+                next_payout_at,
+                announcement_text,
+                announcement_sent
+            )
+            VALUES (?, ?, '', 0)
+        """, (
+            payout_time,
+            next_payout_time
+        ))
+
+        round_id = cursor_round.lastrowid
+
+        reward_lines = []
+
+        # ======================================
+        # REWARD EACH ELIGIBLE BOOSTER
+        # ======================================
+
+        for member in members:
+
+            extra_boosts = extra_boost_map.get(
+                member.id,
+                0
+            )
+
+            total_boosts = 1 + extra_boosts
+
+            points_reward = (
+                25 + (15 * (total_boosts - 1))
+            )
+
+            # Get existing Creator Points.
+            user_row = conn_boost.execute("""
+                SELECT points
+                FROM users
+                WHERE user_id = ?
+            """, (
+                member.id,
+            )).fetchone()
+
+            if user_row:
+
+                old_total = user_row[0] or 0
+                new_total = old_total + points_reward
+
+                conn_boost.execute("""
+                    UPDATE users
+                    SET points = ?
+                    WHERE user_id = ?
+                """, (
+                    new_total,
+                    member.id
+                ))
+
+            else:
+
+                new_total = points_reward
+
+                conn_boost.execute("""
+                    INSERT INTO users (
+                        user_id,
+                        points
+                    )
+                    VALUES (?, ?)
+                """, (
+                    member.id,
+                    new_total
+                ))
+
+            # Save individual reward history.
+            conn_boost.execute("""
+                INSERT INTO booster_incentive_rewards (
+                    round_id,
+                    user_id,
+                    boost_count,
+                    points_awarded,
+                    new_total
+                )
+                VALUES (?, ?, ?, ?, ?)
+            """, (
+                round_id,
+                member.id,
+                total_boosts,
+                points_reward,
+                new_total
+            ))
+
+            if total_boosts == 1:
+                boost_description = ""
+
+            elif total_boosts == 2:
+                boost_description = " (for boosting twice!)"
+
+            else:
+                boost_description = (
+                    f" (for boosting {total_boosts} times!)"
+                )
+
+            reward_lines.append(
+                f"{member.mention} Received "
+                f"**{points_reward} Creator Points 💎**"
+                f"{boost_description}\n"
+                f"   Updated Total: **{new_total} Creator Points**"
+            )
+
+        # ======================================
+        # BUILD ANNOUNCEMENT
+        # ======================================
+
+        next_payout_timestamp = int(
+            next_payout_time
+        )
+
+        announcement = (
+            f"<@&{SERVER_BOOSTER_ROLE_ID}>\n\n"
+            f"Thank you for helping boost the server!\n\n"
+            f"Today is Incentive Day! Each eligible booster "
+            f"will receive Creator Points 💎 as a token of "
+            f"our appreciation.\n\n"
+            f"**Here are today's rewards:**\n\n"
+        )
+
+        if reward_lines:
+
+            announcement += "\n\n".join(
+                reward_lines
+            )
+
+        else:
+
+            announcement += (
+                "No eligible Server Boosters qualified "
+                "for this incentive round."
+            )
+
+        announcement += (
+            "\n\n"
+            "✅ All Creator Points have been successfully credited!\n\n"
+            f"**Next Incentive Day:** "
+            f"<t:{next_payout_timestamp}:F> "
+            f"(<t:{next_payout_timestamp}:R>)\n\n"
+            "Make sure to keep your boost active to qualify "
+            "for the next round.\n\n"
+            "Thank you all for supporting the VeloraX Community! 🤝\n\n"
+            f"<@&{CREATOR_ROLE_ID}>"
+        )
+
+        # ======================================
+        # SAVE ANNOUNCEMENT AND NEXT PAYOUT
+        # ======================================
+
+        conn_boost.execute("""
+            UPDATE booster_incentive_rounds
+            SET announcement_text = ?
+            WHERE id = ?
+        """, (
+            announcement,
+            round_id
+        ))
+
+        conn_boost.execute("""
+            UPDATE booster_incentive_schedule
+            SET
+                next_payout_at = ?,
+                last_payout_at = ?
+            WHERE id = 1
+        """, (
+            next_payout_time,
+            payout_time
+        ))
+
+        conn_boost.commit()
+
+        print(
+            f"✅ Booster incentive payout completed. "
+            f"Round #{round_id}, "
+            f"{len(reward_lines)} eligible members."
+        )
+
+        return True
+
+    except Exception:
+
+        conn_boost.rollback()
+        raise
+
+    finally:
+
+        conn_boost.close()
+
+
+# ==========================================
+# SEND SAVED INCENTIVE ANNOUNCEMENT
+# ==========================================
+
+async def send_pending_booster_announcement():
+
+    conn_boost = sqlite3.connect(
+        DB_PATH,
+        timeout=30
+    )
+
+    try:
+
+        row = conn_boost.execute("""
+            SELECT id, announcement_text
+            FROM booster_incentive_rounds
+            WHERE announcement_sent = 0
+            AND announcement_text != ''
+            ORDER BY id ASC
+            LIMIT 1
+        """).fetchone()
+
+    finally:
+
+        conn_boost.close()
+
+    if not row:
+        return False
+
+    round_id, announcement = row
+
+    channel = bot.get_channel(
+        BOOST_INCENTIVE_CHANNEL_ID
+    )
+
+    if channel is None:
+
+        channel = await bot.fetch_channel(
+            BOOST_INCENTIVE_CHANNEL_ID
+        )
+
+    # ======================================
+    # SPLIT LONG ANNOUNCEMENTS
+    # DISCORD MESSAGE LIMIT: 2000
+    # ======================================
+
+    chunks = []
+    current_chunk = ""
+
+    for line in announcement.split("\n"):
+
+        candidate = (
+            current_chunk + "\n" + line
+            if current_chunk
+            else line
+        )
+
+        if len(candidate) > 1900 and current_chunk:
+
+            chunks.append(current_chunk)
+            current_chunk = line
+
+        else:
+
+            current_chunk = candidate
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    allowed_mentions = discord.AllowedMentions(
+        users=True,
+        roles=False,
+        everyone=False
+    )
+
+    for chunk in chunks:
+
+        await channel.send(
+            chunk,
+            allowed_mentions=allowed_mentions
+        )
+
+    # Only mark the announcement sent after all chunks succeed.
+    conn_boost = sqlite3.connect(
+        DB_PATH,
+        timeout=30
+    )
+
+    try:
+
+        conn_boost.execute("""
+            UPDATE booster_incentive_rounds
+            SET announcement_sent = 1
+            WHERE id = ?
+        """, (
+            round_id,
+        ))
+
+        conn_boost.commit()
+
+    finally:
+
+        conn_boost.close()
+
+    print(
+        f"✅ Booster incentive announcement sent "
+        f"for round #{round_id}."
+    )
+
+    return True
+
+# ==========================================
+# SERVER BOOSTER INCENTIVE SCHEDULER
+# ==========================================
+
+async def booster_incentive_scheduler():
+
+    print("✅ Server Booster incentive scheduler started.")
+
+    while not bot.is_closed():
+
+        try:
+
+            # Retry any announcement that was not successfully sent.
+            await send_pending_booster_announcement()
+
+            conn_boost = sqlite3.connect(
+                DB_PATH,
+                timeout=30
+            )
+
+            try:
+
+                schedule = conn_boost.execute("""
+                    SELECT next_payout_at
+                    FROM booster_incentive_schedule
+                    WHERE id = 1
+                """).fetchone()
+
+            finally:
+
+                conn_boost.close()
+
+            if not schedule:
+                raise RuntimeError(
+                    "Server Booster incentive schedule not found."
+                )
+
+            next_payout = schedule[0]
+            remaining = next_payout - time.time()
+
+            if remaining > 0:
+
+                # Sleep until the saved payout time.
+                await asyncio.sleep(remaining)
+
+                continue
+
+            # Payout is due.
+            await process_booster_incentive_payout()
+
+        except asyncio.CancelledError:
+
+            raise
+
+        except Exception as error:
+
+            print(
+                f"❌ Server Booster incentive scheduler error: "
+                f"{error!r}"
+            )
+
+            # Retry failures without changing the saved schedule.
+            await asyncio.sleep(60)
+
+
 # =========================
 # DELETE MESSAGES
 # =========================
@@ -11491,8 +13713,181 @@ async def on_message(message):
 
 @bot.event
 async def on_ready():
+
+    global report_recovery_done
+    global booster_incentive_task
+
     print(f"Logged in as {bot.user}")
 
+    # ==========================================
+    # START SERVER BOOSTER INCENTIVE
+    # ==========================================
+
+    initialize_booster_incentive_db()
+
+    if (
+        booster_incentive_task is None
+        or booster_incentive_task.done()
+    ):
+
+        booster_incentive_task = asyncio.create_task(
+            booster_incentive_scheduler()
+        )
+
+        print(
+            "✅ Server Booster incentive scheduler initialized."
+        )
+
+    if not report_recovery_done:
+        cursor.execute("""
+            UPDATE community_quest_report_batches
+            SET status = 'needs_manual_review'
+            WHERE status = 'processing'
+        """)
+        conn.commit()
+
+        print("⚠️ Interrupted report submissions flagged for manual inspection.")
+
+        # FLAG INTERRUPTED ADMIN REVIEWS
+        cursor.execute("""
+            UPDATE community_quest_reports
+            SET review_result = 'needs_manual_review'
+            WHERE status = 'reviewing'
+            AND review_result = 'started'
+        """)
+        conn.commit()
+
+        print("⚠️ Interrupted admin reviews flagged for manual inspection.")
+
+        report_recovery_done = True
+    
+    
+    # ==========================================
+    # RESTORE OPEN COMMUNITY QUEST REPORT VIEWS
+    # ==========================================
+
+    cursor.execute("""
+        SELECT
+            quest_id,
+            creator_id,
+            thread_id,
+            control_message_id,
+            selected_user_ids
+        FROM community_quest_report_batches
+        WHERE status = 'open'
+        AND control_message_id IS NOT NULL
+    """)
+
+    open_report_batches = cursor.fetchall()
+
+    for (
+        quest_id,
+        creator_id,
+        thread_id,
+        control_message_id,
+        selected_user_ids_json
+    ) in open_report_batches:
+
+        if control_message_id in restored_report_view_ids:
+            continue
+
+        try:
+            # Get all claimants for this quest
+
+            cursor.execute("""
+                SELECT user_id
+                FROM quest_claims
+                WHERE quest_id = ?
+            """, (quest_id,))
+
+            claimant_rows = cursor.fetchall()
+
+            claimant_ids = [
+                row[0]
+                for row in claimant_rows
+            ]
+
+            # Restore previously selected claimants
+
+            try:
+                selected_user_ids = json.loads(
+                    selected_user_ids_json or "[]"
+                )
+
+            except (json.JSONDecodeError, TypeError):
+                selected_user_ids = []
+
+            # Rebuild the persistent reporting view
+
+            report_view = CommunityQuestReportView(
+                quest_id=quest_id,
+                creator_id=creator_id,
+                thread_id=thread_id,
+                claimant_ids=claimant_ids,
+                selected_user_ids=selected_user_ids
+            )
+
+            bot.add_view(
+                report_view,
+                message_id=control_message_id
+            )
+
+            restored_report_view_ids.add(control_message_id)
+
+            print(
+                f"✅ Restored report controls for Quest #{quest_id}"
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Failed to restore report controls "
+                f"for Quest #{quest_id}: {e}"
+            )
+
+    # ==========================================
+    # RESTORE PENDING ADMIN REVIEW BUTTONS
+    # ==========================================
+
+    cursor.execute("""
+        SELECT admin_message_id
+        FROM community_quest_reports
+        WHERE status = 'pending'
+        AND admin_message_id IS NOT NULL
+    """)
+
+    pending_admin_reports = cursor.fetchall()
+
+    for row in pending_admin_reports:
+
+        admin_message_id = row[0]
+
+        if admin_message_id in restored_admin_review_view_ids:
+            continue
+
+        try:
+
+            bot.add_view(
+                ReportReviewView(),
+                message_id=admin_message_id
+            )
+
+            restored_admin_review_view_ids.add(
+                admin_message_id
+            )
+
+            print(
+                f"✅ Restored admin review buttons "
+                f"for message {admin_message_id}"
+            )
+
+        except Exception as e:
+
+            print(
+                f"❌ Failed to restore admin review buttons "
+                f"for message {admin_message_id}: {e}"
+            )
+            
     if not leaderboard_role_sync.is_running():
         leaderboard_role_sync.start()
 
@@ -11542,6 +13937,7 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
+
 
 if __name__ == "__main__":
     bot.run(TOKEN)
