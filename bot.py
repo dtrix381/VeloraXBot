@@ -13723,8 +13723,6 @@ async def on_ready():
     # START SERVER BOOSTER INCENTIVE
     # ==========================================
 
-    initialize_booster_incentive_db()
-
     if (
         booster_incentive_task is None
         or booster_incentive_task.done()
