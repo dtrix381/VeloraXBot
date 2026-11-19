@@ -7489,6 +7489,50 @@ async def create_quest(interaction: discord.Interaction):
                     )
 
                     # =========================
+                    # OWNER X ACCOUNT CHECK
+                    # =========================
+
+                    is_boost_owner = (
+                        self.modal_interaction.user.id
+                        == BOOST_INCENTIVE_OWNER_ID
+                    )
+
+                    owner_using_other_x_account = False
+
+                    if is_boost_owner:
+
+                        cursor.execute("""
+                            SELECT x_username
+                            FROM users
+                            WHERE user_id = ?
+                        """, (
+                            self.modal_interaction.user.id,
+                        ))
+
+                        owner_data = cursor.fetchone()
+
+                        registered_username = (
+                            str(owner_data[0]).strip().lstrip("@").lower()
+                            if owner_data and owner_data[0]
+                            else ""
+                        )
+
+                        submitted_link_lower = (
+                            str(self.submitted_link).strip().lower()
+                        )
+
+                        expected_owner_link = (
+                            f"https://x.com/{registered_username}/status"
+                        )
+
+                        owner_using_other_x_account = (
+                            not registered_username
+                            or not submitted_link_lower.startswith(
+                                expected_owner_link
+                            )
+                        )
+
+                    # =========================
                     # REMOVE POINTS
                     # ADD CREATED QUEST COUNT
                     # =========================
@@ -7621,9 +7665,10 @@ async def create_quest(interaction: discord.Interaction):
                         inline=False
                     )
 
-                    embed.set_thumbnail(
-                        url=self.modal_interaction.user.display_avatar.url
-                    )
+                    if not owner_using_other_x_account:
+                        embed.set_thumbnail(
+                            url=self.modal_interaction.user.display_avatar.url
+                        )
 
                     # =========================
                     # SEND TO QUEST CHANNEL
@@ -7668,18 +7713,19 @@ async def create_quest(interaction: discord.Interaction):
                     # QUEST CREATION LOG
                     # =========================
 
-                    log_channel = guild.get_channel(LOGS_CHANNEL)
+                    if not owner_using_other_x_account:
 
-                    if log_channel:
+                        log_channel = guild.get_channel(LOGS_CHANNEL)
 
-                        await log_channel.send(
-                            f"**Creator Quest Created**\n\n"
-                            f"**Creator:** {self.modal_interaction.user.mention}\n"
-                            f"**Quest:** {self.quest_title}\n"
-                            f"**Spent:** :gem: -{self.budget} **Creator Points**\n"
-                            f"**Earned:** {velorax_reward} Velorax\n"
-                            f"**Total Creator Points:** :gem: {total_points}"
-                        )
+                        if log_channel:
+                            await log_channel.send(
+                                f"**Creator Quest Created**\n\n"
+                                f"**Creator:** {self.modal_interaction.user.mention}\n"
+                                f"**Quest:** {self.quest_title}\n"
+                                f"**Spent:** :gem: -{self.budget} **Creator Points**\n"
+                                f"**Earned:** {velorax_reward} Velorax\n"
+                                f"**Total Creator Points:** :gem: {total_points}"
+                            )
 
                     # =========================
                     # SUCCESS
