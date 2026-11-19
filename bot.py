@@ -25,6 +25,7 @@ X_LINK_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+ENFORCE_QUEST_USERNAME_FOR_TEAM_ADMIN = True
 GUILD_ID = 1501471671360553131
 VELORAX_X_USERNAME = "VeloraX_Labs"
 GUILD_OWNER_ID = 488015447417946151
@@ -50,8 +51,8 @@ CATEGORY_NAME = 1507640053315407904
 REGISTER_CHANNEL = 1507640055680733244
 INVITE_CHANNEL = 1507640057287409786
 AVAILABLE_QUEST_CHANNEL = 1508623094606991440
-QUEST_CHANNEL = 15076400595605955366
-QUEST2_CHANNEL = 1507640059560595536
+QUEST2_CHANNEL = 15076400595605955366
+QUEST_CHANNEL = 1507640059560595536
 REPORT_CHANNEL = 1507640061787639901
 LOGS_CHANNEL = 1507640063666946221
 STATS_CHANNEL = 1507640065826754630
@@ -3827,7 +3828,8 @@ class CommunityQuestView(ui.View):
                     title,
                     message_id,
                     ping_message_id,
-                    reward_multiplier
+                    reward_multiplier,
+                    created_at
                 FROM quests
                 WHERE quest_id = ?
             """, (self.quest_id,))
@@ -3851,11 +3853,27 @@ class CommunityQuestView(ui.View):
             quest_title = quest_data[4]
             message_id = quest_data[5]
             ping_message_id = quest_data[6]
-
             reward_multiplier = quest_data[7] or 1
+            quest_created_at = quest_data[8]
 
             creator_points_reward = reward_multiplier
             velorax_reward = reward_multiplier
+
+            # ========================================
+            # LEADERBOARD RESET PROTECTION
+            # ========================================
+
+            leaderboard_row = claim_cursor.execute("""
+                SELECT started_at
+                FROM leaderboard_state
+                WHERE id = 1
+            """).fetchone()
+
+            if leaderboard_row and quest_created_at:
+                leaderboard_started_at = leaderboard_row[0]
+
+                if quest_created_at < leaderboard_started_at:
+                    creator_points_reward = 0
 
             # CREATOR CANNOT CLAIM
             if interaction.user.id == created_by:
@@ -7343,11 +7361,15 @@ async def create_quest(interaction: discord.Interaction):
             )
 
             # =========================
-            # NORMAL USERS
-            # MUST USE THEIR OWN X
+            # X USERNAME RESTRICTION
             # =========================
 
-            if not is_admin:
+            must_match_username = (
+                not is_admin
+                or ENFORCE_QUEST_USERNAME_FOR_TEAM_ADMIN
+            ) and modal_interaction.user.id != BOOST_INCENTIVE_OWNER_ID
+
+            if must_match_username:
 
                 if not submitted_link.startswith(expected):
 
@@ -9113,18 +9135,19 @@ class PayoutConfirmView(ui.View):
         )
 
 
+
 @bot.tree.command(name="available_tasks")
 @app_commands.describe(
-    amount="How many active quests to show"
+    amount="How many active quests to show (maximum 25)"
 )
 async def available_tasks(
         interaction: discord.Interaction,
         amount: int = 10
 ):
 
-    # =========================
+    # ========================================
     # CHANNEL CHECK
-    # =========================
+    # ========================================
 
     if interaction.channel.id != AVAILABLE_QUEST_CHANNEL:
 
@@ -9145,36 +9168,38 @@ async def available_tasks(
 
         return
 
-    # =========================
+    # ========================================
     # LIMIT AMOUNT
-    # =========================
+    # ========================================
 
     if amount <= 0:
         amount = 10
 
-    if amount > 50:
-        amount = 50
+    if amount > 25:
+        amount = 25
 
-    # =========================
-    # GET ACTIVE QUESTS
-    # =========================
+    # ========================================
+    # GET AVAILABLE COMMUNITY QUESTS
+    # ========================================
 
     cursor.execute("""
-    SELECT
-        quest_id,
-        title,
-        message_id,
-        current_claims,
-        max_claims
-    FROM quests
-    WHERE completed = 0
-    ORDER BY quest_id DESC
-    LIMIT ?
+        SELECT
+            quest_id,
+            title,
+            message_id,
+            current_claims,
+            max_claims
+        FROM quests
+        WHERE completed = 0
+        AND current_claims < max_claims
+        ORDER BY quest_id DESC
+        LIMIT ?
     """, (amount,))
 
     quests = cursor.fetchall()
 
     if not quests:
+
         await interaction.response.send_message(
             "❌ No active quests available.",
             ephemeral=True
@@ -9182,25 +9207,21 @@ async def available_tasks(
 
         return
 
-    # =========================
-    # EMBED
-    # =========================
+    # ========================================
+    # CREATE EMBED
+    # ========================================
 
     embed = discord.Embed(
         title="📜 Available Community Quests",
         color=0x2ECC71
     )
 
-    quest_channel = interaction.guild.get_channel(
-        QUEST_CHANNEL
-    )
-
     for (
-            quest_id,
-            title,
-            message_id,
-            current_claims,
-            max_claims
+        quest_id,
+        title,
+        message_id,
+        current_claims,
+        max_claims
     ) in quests:
 
         remaining = max_claims - current_claims
@@ -9223,18 +9244,23 @@ async def available_tasks(
             inline=False
         )
 
+    # ========================================
+    # FOOTER
+    # ========================================
+
     embed.set_footer(
-        text=f"Showing {len(quests)} active quests"
+        text=f"Showing {len(quests)} available quests"
     )
 
-    # =========================
-    # SEND
-    # =========================
+    # ========================================
+    # SEND RESPONSE
+    # ========================================
 
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True
     )
+
 
 class ReportReviewView(ui.View):
 
@@ -11890,6 +11916,26 @@ async def run_monthly_leaderboard_draw(bot):
 
     conn.commit()
 
+    # ========================================
+    # SAVE NEW LEADERBOARD START TIME
+    # ========================================
+
+    leaderboard_started_at = datetime.now(UTC).isoformat()
+
+    cursor.execute("""
+        INSERT INTO leaderboard_state (
+            id,
+            started_at
+        )
+        VALUES (1, ?)
+        ON CONFLICT(id)
+        DO UPDATE SET started_at = excluded.started_at
+    """, (
+        leaderboard_started_at,
+    ))
+
+    conn.commit()
+
     logs_channel = guild.get_channel(
         LOGS_CHANNEL
     )
@@ -13260,7 +13306,7 @@ async def on_message(message):
     # QUEST CHANNEL
     # =========================
 
-    if message.channel.id == QUEST2_CHANNEL:
+    if message.channel.id == QUEST_CHANNEL:
 
         try:
             await message.delete()
