@@ -4042,12 +4042,22 @@ class CommunityQuestView(ui.View):
                 inline=False
             )
 
-            creator_member = guild.get_member(created_by)
+            cursor.execute("""
+                SELECT owner_external_x
+                FROM quests
+                WHERE quest_id = ?
+            """, (self.quest_id,))
 
-            if creator_member:
-                live_embed.set_thumbnail(
-                    url=creator_member.display_avatar.url
-                )
+            owner_external_x_row = cursor.fetchone()
+
+            if not owner_external_x_row or not owner_external_x_row[0]:
+
+                creator_member = guild.get_member(created_by)
+
+                if creator_member:
+                    live_embed.set_thumbnail(
+                        url=creator_member.display_avatar.url
+                    )
 
             await quest_message.edit(
                 embed=live_embed,
@@ -4269,12 +4279,22 @@ class CommunityQuestView(ui.View):
                     color=discord.Color.green()
                 )
 
-                creator_member = guild.get_member(created_by)
+                cursor.execute("""
+                    SELECT owner_external_x
+                    FROM quests
+                    WHERE quest_id = ?
+                """, (self.quest_id,))
 
-                if creator_member:
-                    completed_embed.set_thumbnail(
-                        url=creator_member.display_avatar.url
-                    )
+                owner_external_x_row = cursor.fetchone()
+
+                if not owner_external_x_row or not owner_external_x_row[0]:
+
+                    creator_member = guild.get_member(created_by)
+
+                    if creator_member:
+                        completed_embed.set_thumbnail(
+                            url=creator_member.display_avatar.url
+                        )
 
                 completed_embed.add_field(
                     name="Quest",
@@ -4406,12 +4426,22 @@ class CommunityQuestView(ui.View):
                     color=discord.Color.dark_grey()
                 )
 
-                creator_member = guild.get_member(created_by)
+                cursor.execute("""
+                    SELECT owner_external_x
+                    FROM quests
+                    WHERE quest_id = ?
+                """, (self.quest_id,))
 
-                if creator_member:
-                    completed_embed_main.set_thumbnail(
-                        url=creator_member.display_avatar.url
-                    )
+                owner_external_x_row = cursor.fetchone()
+
+                if not owner_external_x_row or not owner_external_x_row[0]:
+
+                    creator_member = guild.get_member(created_by)
+
+                    if creator_member:
+                        completed_embed_main.set_thumbnail(
+                            url=creator_member.display_avatar.url
+                        )
 
                 completed_embed_main.add_field(
                     name="Status",
@@ -7575,9 +7605,10 @@ async def create_quest(interaction: discord.Interaction):
                             max_claims,
                             current_claims,
                             completed,
-                            reward_multiplier
+                            reward_multiplier,
+                            owner_external_x
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         self.quest_title,
                         self.submitted_link,
@@ -7586,7 +7617,8 @@ async def create_quest(interaction: discord.Interaction):
                         self.budget,
                         0,
                         0,
-                        self.reward_multiplier
+                        self.reward_multiplier,
+                        1 if owner_using_other_x_account else 0
                     ))
 
                     quest_id = cursor.lastrowid
