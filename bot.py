@@ -12197,7 +12197,6 @@ class LeaderboardReceivedView(ui.View):
         )
 
 
-@tasks.loop(hours=8)
 async def leaderboard_role_sync():
 
     print("🔄 Starting VeloraX leaderboard role synchronization...")
@@ -12213,7 +12212,7 @@ async def leaderboard_role_sync():
             channel = await bot.fetch_channel(LEADERBOARD_CHANNEL)
         except Exception as e:
             print(f"❌ Could not find leaderboard channel: {e}")
-            return
+            return False
 
     guild = channel.guild
 
@@ -12237,7 +12236,7 @@ async def leaderboard_role_sync():
         leaderboard_suspended_role
     ]):
         print("❌ Role synchronization stopped: One or more roles were not found.")
-        return
+        return False
 
     # ======================================
     # FETCH SERVER MEMBERS
@@ -12251,7 +12250,7 @@ async def leaderboard_role_sync():
 
     except Exception as e:
         print(f"❌ Could not fetch server members: {e}")
-        return
+        return False
 
     members_by_id = {
         member.id: member for member in guild_members
@@ -12519,17 +12518,159 @@ async def leaderboard_role_sync():
     except sqlite3.Error as e:
 
         print(f"❌ Leaderboard SQLite error: {e}")
+        return False
 
     except Exception as e:
 
         print(f"❌ Leaderboard synchronization error: {e}")
+        return False
 
     finally:
 
         if sync_conn is not None:
             sync_conn.close()
             print("🔒 Leaderboard SQLite connection closed.")
+            return True
 
+
+
+# ==========================================
+# PERSISTENT LEADERBOARD ROLE SYNC SCHEDULER
+# ==========================================
+
+@tasks.loop(seconds=30)
+async def leaderboard_role_sync_scheduler():
+
+    try:
+
+        sync_conn = sqlite3.connect(
+            DB_PATH,
+            timeout=30
+        )
+
+        sync_cursor = sync_conn.cursor()
+
+        # Create schedule table if it does not exist
+        sync_cursor.execute("""
+        CREATE TABLE IF NOT EXISTS leaderboard_role_sync_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            last_sync_at TEXT
+        )
+        """)
+
+        sync_conn.commit()
+
+        # Read last successful synchronization
+        sync_cursor.execute("""
+        SELECT last_sync_at
+        FROM leaderboard_role_sync_state
+        WHERE id = 1
+        """)
+
+        row = sync_cursor.fetchone()
+
+        sync_conn.close()
+
+        now = datetime.now(UTC)
+
+        last_sync = None
+
+        if row and row[0]:
+
+            try:
+
+                last_sync = datetime.fromisoformat(
+                    row[0]
+                )
+
+                if last_sync.tzinfo is None:
+                    last_sync = last_sync.replace(
+                        tzinfo=UTC
+                    )
+
+            except ValueError:
+
+                print(
+                    "⚠️ Invalid leaderboard sync timestamp. "
+                    "Running a fresh synchronization."
+                )
+
+        # ======================================
+        # CHECK IF 8 HOURS HAVE PASSED
+        # ======================================
+
+        if last_sync:
+
+            next_sync = last_sync + timedelta(hours=8)
+
+            if now < next_sync:
+                return
+
+        # ======================================
+        # RUN LEADERBOARD SYNCHRONIZATION
+        # ======================================
+
+        print(
+            "⏰ Leaderboard role sync is due. "
+            "Starting synchronization..."
+        )
+
+        sync_success = await leaderboard_role_sync()
+
+        if not sync_success:
+
+            print(
+                "❌ Leaderboard sync did not complete. "
+                "The scheduler will retry."
+            )
+
+            return
+
+        # ======================================
+        # SAVE SUCCESSFUL SYNC TIME
+        # ======================================
+
+        completed_at = datetime.now(UTC).isoformat()
+
+        sync_conn = sqlite3.connect(
+            DB_PATH,
+            timeout=30
+        )
+
+        sync_cursor = sync_conn.cursor()
+
+        sync_cursor.execute("""
+        INSERT INTO leaderboard_role_sync_state (
+            id,
+            last_sync_at
+        )
+        VALUES (1, ?)
+        ON CONFLICT(id)
+        DO UPDATE SET
+            last_sync_at = excluded.last_sync_at
+        """, (
+            completed_at,
+        ))
+
+        sync_conn.commit()
+        sync_conn.close()
+
+        print(
+            f"✅ Next leaderboard role sync: "
+            f"{datetime.fromisoformat(completed_at) + timedelta(hours=8)}"
+        )
+
+    except Exception as e:
+
+        print(
+            f"❌ Persistent leaderboard scheduler error: {e}"
+        )
+
+
+@leaderboard_role_sync_scheduler.before_loop
+async def before_leaderboard_role_sync_scheduler():
+
+    await bot.wait_until_ready()
 
 # ==========================================
 # WAIT UNTIL BOT IS READY
@@ -13978,8 +14119,8 @@ async def on_ready():
                 f"for message {admin_message_id}: {e}"
             )
             
-    if not leaderboard_role_sync.is_running():
-        leaderboard_role_sync.start()
+    if not leaderboard_role_sync_scheduler.is_running():
+        leaderboard_role_sync_scheduler.start()
 
         print("✅ Leaderboard role sync scheduled (every 8 hours).")
 
