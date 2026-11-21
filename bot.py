@@ -12529,8 +12529,10 @@ async def leaderboard_role_sync():
 
         if sync_conn is not None:
             sync_conn.close()
+
             print("🔒 Leaderboard SQLite connection closed.")
-            return True
+
+    return True
 
 
 
@@ -12672,15 +12674,6 @@ async def before_leaderboard_role_sync_scheduler():
 
     await bot.wait_until_ready()
 
-# ==========================================
-# WAIT UNTIL BOT IS READY
-# ==========================================
-
-@leaderboard_role_sync.before_loop
-async def before_leaderboard_role_sync():
-    await bot.wait_until_ready()
-
-    
 @bot.listen("on_message")
 async def delete_x_links(message):
 
