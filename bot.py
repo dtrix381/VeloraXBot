@@ -9238,7 +9238,7 @@ async def available_tasks(
         FROM quests
         WHERE completed = 0
         AND current_claims < max_claims
-        ORDER BY quest_id DESC
+        ORDER BY quest_id ASC
         LIMIT ?
     """, (amount,))
 
