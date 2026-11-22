@@ -53,7 +53,7 @@ INVITE_CHANNEL = 1507640057287409786
 AVAILABLE_QUEST_CHANNEL = 1508623094606991440
 QUEST2_CHANNEL = 15076400595605955366
 QUEST_CHANNEL = 1507640059560595536
-REPORT_CHANNEL = 1507640061787639901
+REPORT_CHANNEL = 1573925612694016071
 LOGS_CHANNEL = 1507640063666946221
 STATS_CHANNEL = 1507640065826754630
 LEADERBOARD_CHANNEL = 1508476505900978346
@@ -9764,31 +9764,51 @@ class ReportReviewView(ui.View):
                 ephemeral=True
             )
 
-        member = guild.get_member(reported_user_id)
+        try:
+            # Always fetch the latest member roles from Discord
+            member = await guild.fetch_member(reported_user_id)
 
-        if not member:
-            try:
-                member = await guild.fetch_member(reported_user_id)
+        except discord.NotFound:
 
-            except discord.NotFound:
+            cursor.execute("""
+                UPDATE community_quest_reports
+                SET status = 'pending', reviewed_by = NULL, review_result = NULL
+                WHERE quest_id = ?
+                AND reported_user_id = ?
+            """, (
+                data["quest_id"],
+                reported_user_id
+            ))
 
-                cursor.execute("""
-                    UPDATE community_quest_reports
-                    SET status = 'pending', reviewed_by = NULL, review_result = NULL
-                    WHERE quest_id = ?
-                    AND reported_user_id = ?
-                """, (
-                    data["quest_id"],
-                    reported_user_id
-                ))
+            conn.commit()
 
-                conn.commit()
+            return await interaction.followup.send(
+                "❌ Reported member is no longer in the server. "
+                "The report remains pending.",
+                ephemeral=True
+            )
 
-                return await interaction.followup.send(
-                    "❌ Reported member is no longer in the server. "
-                    "The report remains pending.",
-                    ephemeral=True
-                )
+        except discord.HTTPException as e:
+
+            print(f"❌ Could not refresh reported member roles: {e}")
+
+            cursor.execute("""
+                UPDATE community_quest_reports
+                SET status = 'pending', reviewed_by = NULL, review_result = NULL
+                WHERE quest_id = ?
+                AND reported_user_id = ?
+            """, (
+                data["quest_id"],
+                reported_user_id
+            ))
+
+            conn.commit()
+
+            return await interaction.followup.send(
+                "❌ Could not retrieve the member's latest Discord roles. "
+                "No penalty was applied. Please try again.",
+                ephemeral=True
+            )
 
         reporter = guild.get_member(reporter_id)
 
@@ -9854,6 +9874,16 @@ class ReportReviewView(ui.View):
 
         now = datetime.now(UTC)
 
+        print("========== OFFENSE ROLE CHECK ==========")
+        print(f"Member ID: {member.id}")
+        print(f"First Offense: {first_role in member.roles}")
+        print(f"Second Offense: {second_role in member.roles}")
+        print(
+            f"Leaderboard Suspended: "
+            f"{leaderboard_suspended_role in member.roles}"
+        )
+        print("========================================")
+        
         # ======================================
         # FIRST OFFENSE
         # ======================================
