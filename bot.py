@@ -9906,14 +9906,16 @@ class ReportReviewView(ui.View):
         # ======================================
 
         elif (
-
                 leaderboard_suspended_role not in member.roles
-
                 and second_role not in member.roles
-
         ):
 
+            # Assign Second Offense
             await member.add_roles(second_role)
+
+            # Remove First Offense
+            if first_role in member.roles:
+                await member.remove_roles(first_role)
 
             cursor.execute("""
                 DELETE FROM offense_timers
@@ -10225,6 +10227,7 @@ class ReportReviewView(ui.View):
             f"The result has been posted in the quest completion thread.",
             ephemeral=True
         )
+
 
 async def give_admin_creator_points():
 
