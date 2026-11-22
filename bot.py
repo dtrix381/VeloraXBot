@@ -12668,7 +12668,7 @@ async def leaderboard_role_sync_scheduler():
 
         if last_sync:
 
-            next_sync = last_sync + timedelta(hours=8)
+            next_sync = last_sync + timedelta(hours=4)
 
             if now < next_sync:
                 return
