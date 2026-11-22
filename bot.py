@@ -2746,13 +2746,17 @@ class ApprovalView(ui.View):
 async def load_persistent_views():
 
     cursor.execute("""
-    SELECT quest_id, title, tweet_link
-    FROM quests
+        SELECT quest_id, title, tweet_link, message_id
+        FROM quests
+        WHERE completed = 0
+          AND message_id IS NOT NULL
     """)
 
     quests = cursor.fetchall()
 
-    for quest_id, title, tweet_link in quests:
+    loaded = 0
+
+    for quest_id, title, tweet_link, message_id in quests:
 
         # COMMUNITY QUEST BUTTONS
         bot.add_view(
@@ -2760,7 +2764,8 @@ async def load_persistent_views():
                 quest_id,
                 title,
                 tweet_link
-            )
+            ),
+            message_id=message_id
         )
 
         # PAID QUEST BUTTONS
@@ -2768,8 +2773,11 @@ async def load_persistent_views():
             QuestView(
                 quest_id,
                 tweet_link
-            )
+            ),
+            message_id=message_id
         )
+
+        loaded += 1
 
 
     # =========================
