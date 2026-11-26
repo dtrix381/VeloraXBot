@@ -25,6 +25,7 @@ X_LINK_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+ENABLE_ONE_TIME_BOOSTER_BONUS = True
 ENFORCE_QUEST_USERNAME_FOR_TEAM_ADMIN = True
 GUILD_ID = 1501471671360553131
 VELORAX_X_USERNAME = "VeloraX_Labs"
@@ -12955,6 +12956,7 @@ async def boost_remove(
         conn_boost.close()
         
 
+
 # ==========================================
 # SERVER BOOSTER WEEKLY PAYOUT
 # ==========================================
@@ -12981,7 +12983,6 @@ async def process_booster_incentive_payout():
             "Server Booster role was not found."
         )
 
-    # Fail safely rather than accidentally rewarding Team/Admin.
     if team_admin_role is None:
         raise RuntimeError(
             "Team/Admin role was not found. "
@@ -12999,7 +13000,6 @@ async def process_booster_incentive_payout():
         if booster_role not in member.roles:
             continue
 
-        # Exclude Team/Admin completely.
         if team_admin_role in member.roles:
             continue
 
@@ -13088,13 +13088,19 @@ async def process_booster_incentive_payout():
 
             total_boosts = 1 + extra_boosts
 
+            # Existing Creator Points formula.
             points_reward = (
                 25 + (15 * (total_boosts - 1))
             )
 
-            # Get existing Creator Points.
+            # New Velorax formula.
+            velorax_reward = (
+                25 * total_boosts
+            )
+
+            # Get existing balances.
             user_row = conn_boost.execute("""
-                SELECT points
+                SELECT points, velorax
                 FROM users
                 WHERE user_id = ?
             """, (
@@ -13103,56 +13109,77 @@ async def process_booster_incentive_payout():
 
             if user_row:
 
-                old_total = user_row[0] or 0
-                new_total = old_total + points_reward
+                old_points = user_row[0] or 0
+                old_velorax = user_row[1] or 0
+
+                new_points = (
+                    old_points + points_reward
+                )
+
+                new_velorax = (
+                    old_velorax + velorax_reward
+                )
 
                 conn_boost.execute("""
                     UPDATE users
-                    SET points = ?
+                    SET
+                        points = ?,
+                        velorax = ?
                     WHERE user_id = ?
                 """, (
-                    new_total,
+                    new_points,
+                    new_velorax,
                     member.id
                 ))
 
             else:
 
-                new_total = points_reward
+                new_points = points_reward
+                new_velorax = velorax_reward
 
                 conn_boost.execute("""
                     INSERT INTO users (
                         user_id,
-                        points
+                        points,
+                        velorax
                     )
-                    VALUES (?, ?)
+                    VALUES (?, ?, ?)
                 """, (
                     member.id,
-                    new_total
+                    new_points,
+                    new_velorax
                 ))
 
-            # Save individual reward history.
+            # ======================================
+            # SAVE INDIVIDUAL REWARD HISTORY
+            # ======================================
+
             conn_boost.execute("""
                 INSERT INTO booster_incentive_rewards (
                     round_id,
                     user_id,
                     boost_count,
                     points_awarded,
-                    new_total
+                    new_total,
+                    velorax_awarded
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 round_id,
                 member.id,
                 total_boosts,
                 points_reward,
-                new_total
+                new_points,
+                velorax_reward
             ))
 
             if total_boosts == 1:
                 boost_description = ""
 
             elif total_boosts == 2:
-                boost_description = " (for boosting twice!)"
+                boost_description = (
+                    " (for boosting twice!)"
+                )
 
             else:
                 boost_description = (
@@ -13161,9 +13188,12 @@ async def process_booster_incentive_payout():
 
             reward_lines.append(
                 f"{member.mention} Received "
-                f"**{points_reward} Creator Points 💎**"
+                f"**{points_reward} Creator Points 💎** "
+                f"and **{velorax_reward} Velorax**"
                 f"{boost_description}\n"
-                f"   Updated Total: **{new_total} Creator Points**"
+                f"   Updated Total: "
+                f"**{new_points} Creator Points** "
+                f"and **{new_velorax} Velorax**"
             )
 
         # ======================================
@@ -13178,8 +13208,8 @@ async def process_booster_incentive_payout():
             f"<@&{SERVER_BOOSTER_ROLE_ID}>\n\n"
             f"Thank you for helping boost the server!\n\n"
             f"Today is Incentive Day! Each eligible booster "
-            f"will receive Creator Points 💎 as a token of "
-            f"our appreciation.\n\n"
+            f"will receive Creator Points 💎 and Velorax "
+            f"as a token of our appreciation.\n\n"
             f"**Here are today's rewards:**\n\n"
         )
 
@@ -13198,7 +13228,8 @@ async def process_booster_incentive_payout():
 
         announcement += (
             "\n\n"
-            "✅ All Creator Points have been successfully credited!\n\n"
+            "✅ All Creator Points and Velorax have "
+            "been successfully credited!\n\n"
             f"**Next Incentive Day:** "
             f"<t:{next_payout_timestamp}:F> "
             f"(<t:{next_payout_timestamp}:R>)\n\n"
@@ -14018,6 +14049,8 @@ async def on_ready():
 
     print(f"Logged in as {bot.user}")
 
+    await run_temporary_booster_bonus()
+    
     # ==========================================
     # START SERVER BOOSTER INCENTIVE
     # ==========================================
@@ -14234,6 +14267,254 @@ async def on_ready():
             invite.code: invite.uses
             for invite in await guild.invites()
         }
+
+
+###### DELETE HERE ####
+
+
+# ==================================================
+# TEMPORARY ONE-TIME SERVER BOOSTER BONUS
+# DELETE AFTER SUCCESSFUL PAYOUT
+# ==================================================
+
+async def run_temporary_booster_bonus():
+
+    if not ENABLE_ONE_TIME_BOOSTER_BONUS:
+        print("ℹ️ One-time Booster Bonus is disabled.")
+        return False
+
+    guild = bot.get_guild(GUILD_ID)
+
+    if guild is None:
+        raise RuntimeError("Server Booster bonus: guild not found.")
+
+    booster_role = guild.get_role(SERVER_BOOSTER_ROLE_ID)
+    team_role = guild.get_role(TEAM_ROLE_ID)
+
+    if booster_role is None or team_role is None:
+        raise RuntimeError("Server Booster or Team role not found.")
+
+    members = [
+        member
+        async for member in guild.fetch_members(limit=None)
+    ]
+
+    eligible_members = [
+        member for member in members
+        if booster_role in member.roles
+        and team_role not in member.roles
+        and not member.bot
+    ]
+
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("BEGIN IMMEDIATE")
+
+        # Permanent one-time payment protection.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS booster_one_time_bonus_state (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                paid INTEGER NOT NULL DEFAULT 0,
+                round_id INTEGER
+            )
+        """)
+
+        conn.execute("""
+            INSERT OR IGNORE INTO booster_one_time_bonus_state
+            (id, paid)
+            VALUES (1, 0)
+        """)
+
+        state = conn.execute("""
+            SELECT paid
+            FROM booster_one_time_bonus_state
+            WHERE id = 1
+        """).fetchone()
+
+        if state and state[0] == 1:
+            conn.rollback()
+            print("ℹ️ One-time Booster Bonus was already paid.")
+            return False
+
+        if not eligible_members:
+            conn.rollback()
+            print("⚠️ No eligible Server Boosters found.")
+            return False
+
+        # Read manually recorded additional boosts.
+        extra_rows = conn.execute("""
+            SELECT user_id, extra_boosts
+            FROM booster_extra_boosts
+        """).fetchall()
+
+        extra_boost_map = {
+            int(user_id): int(extra_boosts or 0)
+            for user_id, extra_boosts in extra_rows
+        }
+
+        # Read the existing weekly schedule WITHOUT changing it.
+        schedule = conn.execute("""
+            SELECT next_payout_at
+            FROM booster_incentive_schedule
+            WHERE id = 1
+        """).fetchone()
+
+        if not schedule:
+            raise RuntimeError("Booster incentive schedule not found.")
+
+        payout_time = time.time()
+
+        cursor = conn.execute("""
+            INSERT INTO booster_incentive_rounds (
+                paid_at,
+                next_payout_at,
+                announcement_text,
+                announcement_sent
+            )
+            VALUES (?, ?, '', 0)
+        """, (
+            payout_time,
+            schedule[0]
+        ))
+
+        round_id = cursor.lastrowid
+
+        announcement = [
+            "🎉 **ONE-TIME SERVER BOOSTER BONUS**",
+            "",
+            "An additional Server Booster reward has been distributed!",
+            "",
+            "**Rewards:**",
+            "• 25 Creator Points for the first boost",
+            "• +15 Creator Points for each additional boost",
+            "• 25 Velorax per boost",
+            "",
+            "**Recipients:**"
+        ]
+
+        total_points = 0
+        total_velorax = 0
+
+        for member in eligible_members:
+
+            user_id = member.id
+
+            total_boosts = 1 + extra_boost_map.get(user_id, 0)
+
+            # Original Creator Points formula.
+            points_reward = 25 + (15 * (total_boosts - 1))
+
+            # 25 Velorax per boost.
+            velorax_reward = 25 * total_boosts
+
+            user_row = conn.execute("""
+                SELECT points, velorax
+                FROM users
+                WHERE user_id = ?
+            """, (user_id,)).fetchone()
+
+            if user_row:
+                new_points = (user_row[0] or 0) + points_reward
+                new_velorax = (user_row[1] or 0) + velorax_reward
+
+                conn.execute("""
+                    UPDATE users
+                    SET points = ?,
+                        velorax = ?
+                    WHERE user_id = ?
+                """, (
+                    new_points,
+                    new_velorax,
+                    user_id
+                ))
+
+            else:
+                new_points = points_reward
+                new_velorax = velorax_reward
+
+                conn.execute("""
+                    INSERT INTO users (user_id, points, velorax)
+                    VALUES (?, ?, ?)
+                """, (
+                    user_id,
+                    new_points,
+                    new_velorax
+                ))
+
+            conn.execute("""
+                INSERT INTO booster_incentive_rewards (
+                    round_id,
+                    user_id,
+                    boost_count,
+                    points_awarded,
+                    new_total,
+                    velorax_awarded
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                round_id,
+                user_id,
+                total_boosts,
+                points_reward,
+                new_points,
+                velorax_reward
+            ))
+
+            total_points += points_reward
+            total_velorax += velorax_reward
+
+            announcement.append(
+                f"• {member.mention} — {total_boosts} boost(s): "
+                f"+{points_reward} Creator Points, "
+                f"+{velorax_reward} Velorax"
+            )
+
+        announcement.extend([
+            "",
+            "**Total Distributed:**",
+            f"• {total_points} Creator Points",
+            f"• {total_velorax} Velorax",
+            "",
+            "Your regular weekly booster schedule remains unchanged."
+        ])
+
+        conn.execute("""
+            UPDATE booster_incentive_rounds
+            SET announcement_text = ?
+            WHERE id = ?
+        """, (
+            "\n".join(announcement),
+            round_id
+        ))
+
+        # Mark as paid in the same transaction as the rewards.
+        conn.execute("""
+            UPDATE booster_one_time_bonus_state
+            SET paid = 1,
+                round_id = ?
+            WHERE id = 1
+        """, (round_id,))
+
+        conn.commit()
+
+        print(
+            f"✅ ONE-TIME BOOSTER BONUS PAID | "
+            f"Round #{round_id} | "
+            f"{len(eligible_members)} members | "
+            f"{total_points} Creator Points | "
+            f"{total_velorax} Velorax"
+        )
+
+        return True
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
